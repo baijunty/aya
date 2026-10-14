@@ -1,0 +1,113 @@
+# Aya 端到端测试配置：真实小模型（llama.cpp server，参考 /mnt/soft/llm/config.ini）
+# 主机为统一内存架构；小模型以 CPU 模式运行（-ngl 0），稳定且不占 GPU。
+server:
+  listen: "127.0.0.1:8000"
+  static_ui: true
+
+storage:
+  type: sqlite
+  path: ./data-e2e/aya.db
+  retention_days: 7
+
+resources:
+  probe_interval: 2s
+  safety_margin_mb: 512
+
+backends:
+  - name: qwen-chat
+    type: process
+    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    args:
+      - --model
+      - /mnt/ssd/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8100"
+      - --ctx-size
+      - "4096"
+      - -ngl
+      - "0"
+      - --jinja
+      - --no-webui
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    base_url: "http://127.0.0.1:8100/v1"
+    health_check: { path: /health, interval: 1s }
+    start_timeout: 120s
+    stop_grace_period: 10s
+    idle_timeout: 90s
+    required_memory: { mem_mb: 1024 }
+    priority: 10
+
+  - name: embed
+    type: process
+    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    args:
+      - --model
+      - /mnt/soft/llm/models/Embedding/Qwen.Qwen3-VL-Embedding-2B.gguf
+      - --embedding
+      - --pooling
+      - last
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8101"
+      - --ctx-size
+      - "4096"
+      - -ngl
+      - "0"
+      - --no-webui
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    base_url: "http://127.0.0.1:8101/v1"
+    health_check: { path: /health, interval: 1s }
+    start_timeout: 120s
+    idle_timeout: 60s
+    required_memory: { mem_mb: 3072 }
+    priority: 5
+
+  - name: asr
+    type: process
+    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    args:
+      - --model
+      - /mnt/soft/llm/models/ASR/Qwen3-ASR-1.7B-Q8_0.gguf
+      - --mmproj
+      - /mnt/soft/llm/models/ASR/mmproj-Qwen3-ASR-1.7B-bf16.gguf
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8102"
+      - --ctx-size
+      - "4096"
+      - -ngl
+      - "0"
+      - --no-webui
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    base_url: "http://127.0.0.1:8102/v1"
+    health_check: { path: /health, interval: 1s }
+    start_timeout: 180s
+    idle_timeout: 60s
+    required_memory: { mem_mb: 4096 }
+    priority: 1
+
+models:
+  - name: qwen2.5-0.5b
+    aliases: ["gpt-4o-mini"]
+    backend: qwen-chat
+    kind: chat
+    context_length: 4096
+  - name: qwen3-vl-embed-2b
+    backend: embed
+    kind: embedding
+  - name: qwen3-asr-1.7b
+    backend: asr
+    kind: asr

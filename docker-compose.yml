@@ -1,0 +1,14 @@
+services:
+  aya:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/etc/aya/config.yaml:ro
+      - aya-data:/app/data
+      # 托管后端模型目录按需挂载
+      # - /models:/models:ro
+    restart: unless-stopped
+
+volumes:
+  aya-data:

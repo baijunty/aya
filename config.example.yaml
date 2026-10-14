@@ -1,0 +1,93 @@
+# Aya 配置示例 —— AI 模型请求转发网关
+# 用法: aya --config config.yaml
+
+server:
+  listen: "127.0.0.1:8000"
+  api_keys: []            # 为空则不鉴权（本地默认）；非空时 /v1 与 /api/v1 均需 Bearer Key
+  static_ui: true         # 托管统计前端构建产物
+
+storage:
+  type: sqlite
+  path: ./data/aya.db
+  retention_days: 90
+
+resources:                # 资源感知加载（防 OOM；统一内存主机只看系统内存）
+  enabled: true
+  probe_interval: 5s
+  safety_margin_mb: 1024  # 准入安全余量
+  evict_wait_timeout: 10m # 等待驱逐候选闲置的最长时间
+  allow_evict_busy: false # 默认不打断使用中的后端
+
+proxy:
+  idle_response_timeout: 120s   # 上游无字节空闲超时
+  max_upload_bytes: 104857600   # ASR/图片上传上限（100MB）
+
+backends:
+  # 托管进程型：网关拉起/健康检查/闲置卸载
+  - name: qwen-vllm
+    type: process
+    command: python
+    args:
+      - -m
+      - vllm.entrypoints.openai.api_server
+      - --model
+      - "{model_path}"
+      - --max-model-len
+      - "32768"
+      - --port
+      - "8100"
+    env: { CUDA_VISIBLE_DEVICES: "0" }
+    base_url: "http://127.0.0.1:8100/v1"
+    health_check: { path: /health, interval: 5s }
+    start_timeout: 300s
+    stop_grace_period: 60s
+    idle_timeout: 15m           # 闲置 15 分钟自动停止（0 = 不自动停止）
+    max_concurrency: 8
+    queue_size: 64
+    queue_timeout: 120s
+    restart: { max_retries: 3, backoff_base: 2s }
+    model_path: /models/Qwen2.5-7B-Instruct   # 供 args 中 {model_path} 插值
+    required_memory: { mem_mb: 16384 }        # 加载所需内存峰值（准入检查）
+    priority: 100               # 高优先级，难被驱逐
+    evictable: true             # false = 常驻，永不被驱逐
+
+  # llama.cpp 示例（参考本机 /mnt/soft/llm/config.ini）
+  - name: qwen-llamacpp
+    type: process
+    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    args:
+      - --model
+      - /mnt/ssd/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8101"
+      - --ctx-size
+      - "8192"
+      - --jinja
+      - --no-webui
+    base_url: "http://127.0.0.1:8101/v1"
+    health_check: { path: /health, interval: 1s }
+    start_timeout: 120s
+    idle_timeout: 10m
+    required_memory: { mem_mb: 2048 }
+
+  # 远程型：已运行的 OpenAI 兼容服务（网关不管理进程）
+  - name: tts-remote
+    type: remote
+    base_url: "http://192.168.1.20:5000/v1"
+    auth: { header: Authorization, value: "Bearer sk-xxx" }  # 上游鉴权注入（可选）
+
+models:
+  - name: qwen2.5-7b-instruct
+    aliases: ["gpt-4o-mini"]    # 现有客户端无缝接入
+    backend: qwen-vllm
+    kind: chat                  # chat | completion | embedding | image | asr | tts
+    context_length: 32768
+  - name: qwen2.5-0.5b
+    backend: qwen-llamacpp
+    kind: chat
+    context_length: 8192
+  - name: cosyvoice-tts
+    backend: tts-remote
+    kind: tts
