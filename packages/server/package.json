@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "tsx src/index.ts --config ../../config.example.yaml",
+    "dev": "tsx src/index.ts --config ../../config.yaml",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

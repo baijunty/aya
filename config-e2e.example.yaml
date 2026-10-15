@@ -1,4 +1,5 @@
-# Aya 端到端测试配置：真实小模型（llama.cpp server，参考 /mnt/soft/llm/config.ini）
+# Aya 端到端测试配置：真实小模型（llama.cpp server）
+# 模板：把 path/to/… 换成本机 llama-server 与 gguf 的实际路径，另存为 config-e2e.yaml（本机副本不入库）
 # 主机为统一内存架构；小模型以 CPU 模式运行（-ngl 0），稳定且不占 GPU。
 server:
   listen: "127.0.0.1:8000"
@@ -16,10 +17,10 @@ resources:
 backends:
   - name: qwen-chat
     type: process
-    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    command: path/to/llama-server
     args:
       - --model
-      - /mnt/ssd/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
+      - path/to/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
       - --host
       - 127.0.0.1
       - --port
@@ -44,10 +45,10 @@ backends:
 
   - name: embed
     type: process
-    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    command: path/to/llama-server
     args:
       - --model
-      - /mnt/soft/llm/models/Embedding/Qwen.Qwen3-VL-Embedding-2B.gguf
+      - path/to/models/Embedding/Qwen.Qwen3-VL-Embedding-2B.gguf
       - --embedding
       - --pooling
       - last
@@ -73,12 +74,12 @@ backends:
 
   - name: asr
     type: process
-    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    command: path/to/llama-server
     args:
       - --model
-      - /mnt/soft/llm/models/ASR/Qwen3-ASR-1.7B-Q8_0.gguf
+      - path/to/models/ASR/Qwen3-ASR-1.7B-Q8_0.gguf
       - --mmproj
-      - /mnt/soft/llm/models/ASR/mmproj-Qwen3-ASR-1.7B-bf16.gguf
+      - path/to/models/ASR/mmproj-Qwen3-ASR-1.7B-bf16.gguf
       - --host
       - 127.0.0.1
       - --port

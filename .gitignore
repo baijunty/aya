@@ -17,10 +17,12 @@ output/
 *.db-wal
 *.db-shm
 
-# ——— 隐私：本机真实配置与凭据（模板见 config.example.yaml）———
-# 含真实 api_keys / ui_auth 口令 / 本机模型路径，只在本机保留
+# ——— 隐私 / 本机实机配置（入库的只有 *.example.yaml 模板，路径为 path/to/… 占位）———
+# 真实 api_keys、ui_auth 口令与本机模型路径只留在本机，不入库
 config.yaml
 config.local.yaml
+# e2e 实机配置（照抄 config-e2e.example.yaml 填本机路径）
+config-e2e.yaml
 .env
 .env.*
 *.pem

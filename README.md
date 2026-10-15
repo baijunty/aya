@@ -18,7 +18,8 @@
 ```bash
 pnpm install
 pnpm -r build
-node packages/server/dist/index.js --config config.example.yaml
+cp config.example.yaml config.yaml   # 模板内路径为 path/to/… 占位，换成本机实际路径
+node packages/server/dist/index.js --config config.yaml
 ```
 
 打开 `http://127.0.0.1:8000/` 查看统计看板；`/healthz` 健康检查。
@@ -31,14 +32,14 @@ client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="sk-any")
 client.chat.completions.create(model="qwen2.5-0.5b", messages=[{"role": "user", "content": "你好"}])
 ```
 
-配置说明见 [config.example.yaml](config.example.yaml)（含 llama.cpp / vLLM / remote 三类后端示例）。
+配置说明见 [config.example.yaml](config.example.yaml)（含 process / remote / cli 三类后端与逐字段注释；填好本机路径后存为 `config.yaml`，该文件不入库）。
 
 ## 开发
 
 ```bash
 pnpm -r test        # vitest：core 纯逻辑单测 + server 集成测试（mock 后端）
 pnpm -r typecheck   # tsc --noEmit
-pnpm --filter @aya/server dev   # tsx 热跑
+pnpm --filter @aya/server dev   # tsx 热跑（读仓库根 config.yaml）
 pnpm --filter @aya/web dev      # 前端 dev（代理到 8000）
 ```
 
@@ -53,10 +54,11 @@ packages/web      React + Vite + ECharts 统计看板（构建产物由网关静
 ## 端到端验证（真实小模型）
 
 ```bash
+cp config-e2e.example.yaml config-e2e.yaml   # 填入本机 llama-server 与 gguf 路径
 node packages/server/dist/index.js --config config-e2e.yaml
 ```
 
-`config-e2e.yaml` 配置了三个真实小模型后端（llama.cpp，CPU 模式）：
+模板 [config-e2e.example.yaml](config-e2e.example.yaml) 配置了三个真实小模型后端（llama.cpp，CPU 模式；填好本机路径后另存为 `config-e2e.yaml`，该副本不入库）：
 
 | 模型 | 后端 | 验证点 |
 |---|---|---|
