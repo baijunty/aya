@@ -93,7 +93,7 @@ aya/
 
 ```ts
 // —— 配置 ——
-type BackendType = 'process' | 'remote';
+type BackendType = 'process' | 'remote' | 'cli';
 interface BackendConfig {
   name: string;
   type: BackendType;
@@ -452,7 +452,12 @@ MVP 直接在 `request_logs` 上按时间范围 + 粒度实时聚合（SQLite �
   - 删除后端：对其 `stop('config_removed')`（drain 后停）；
   - 修改后端命令/端口：标记 `pending_restart`，drain 完当前 in-flight 后按新配置重启；
   - 修改模型参数（context_length 等）：新快照直接生效。
-- 校验期交叉检查：`model.backend` 必须存在；`base_url` 合法；process 型必须有 `command`；remote 型必须有 `base_url`。
+- 校验期交叉检查：`model.backend` 必须存在；`base_url` 合法；process/cli 型必须有 `command`；remote 型必须有 `base_url`。
+- cli 型后端：无常驻进程/健康检查/闲置卸载；每请求 spawn 一次性命令（args 支持 `{input_file}`/`{output_file}`/`{output_pattern}`/`{speaker_file}` 及
+  image 端点的 `{prompt}`/`{width}`/`{height}`/`{seed}`/`{batch_count}` 占位符），
+  产出文件按 `output_content_type` 回传；`max_concurrency` 限并发，`required_memory` 经资源准入（并发共享一份预留），`cli_timeout` 超时杀进程组。
+  另支持 `fail_on_output`（子串列表，不区分大小写）：stdout/stderr 命中即认定后端降级运行（典型是 GPU 初始化失败静默退回 CPU，
+  单次耗时涨两个数量级），立刻整组杀掉并返回 502 `backend_degraded` 附原始行，避免陪跑满 `cli_timeout` 后只留下一个无信息量的超时。
 
 ---
 
@@ -460,7 +465,7 @@ MVP 直接在 `request_logs` 上按时间范围 + 粒度实时聚合（SQLite �
 
 - `server.api_keys` 为空 → 不鉴权（本地默认）；非空 → 校验 `Authorization: Bearer`，命中即记 `key_id`（key 的短哈希，不落明文）。
 - 管理台与 `/api/v1/*`：启用鉴权时同样要求合法 Key（需求开放问题 6 默认）。
-- 隐私：`req_summary` 只存参数摘要（`max_tokens`/`temperature`/图片尺寸/音频时长等），**不存** messages 正文、图片数据、音频数据。
+- 隐私：`req_summary` 只存参数摘要（`max_tokens`/`temperature`/图片尺寸/音频时长等），**不存** messages 正文、图片数据、音频数据。失败请求例外：`proxy.log_raw_on_error`（默认开）会把请求体与上游错误响应的**头部**（`raw_log_max_bytes`，默认 8KB 截断）记入 `req_raw`/`resp_raw` 供排障，可在配置关闭。
 - 默认 `listen` 建议 `127.0.0.1`；对外暴露由用户显式改配置或走反代。
 
 ---

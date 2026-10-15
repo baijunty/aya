@@ -1,9 +1,35 @@
+# ——— 依赖与构建产物 ———
 node_modules/
 dist/
+# tsc 增量构建缓存（非必要）
+*.tsbuildinfo
+coverage/
+.vitest/
+
+# ——— 运行时数据与生成产物 ———
+# SQLite 库及其同级 voices/、logs/
 data/
 data-e2e/
+# 手工验证产出的图片 / 音频 / 响应 JSON
+output/
 *.log
-.DS_Store
 *.db
 *.db-wal
 *.db-shm
+
+# ——— 隐私：本机真实配置与凭据（模板见 config.example.yaml）———
+# 含真实 api_keys / ui_auth 口令 / 本机模型路径，只在本机保留
+config.yaml
+config.local.yaml
+.env
+.env.*
+*.pem
+*.key
+*.p12
+id_rsa*
+
+# ——— 编辑器与系统杂项 ———
+.DS_Store
+.idea/
+.vscode/
+*.swp

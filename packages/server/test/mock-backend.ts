@@ -56,6 +56,28 @@ export async function startMockBackend(): Promise<MockBackend> {
         return;
       }
       if (url.pathname === '/v1/chat/completions') {
+        if (json.model === 'mock-framing') {
+          // 回显上游收到的请求体定界方式：用于断言网关没有把请求退化成 chunked
+          res.writeHead(200, { 'content-type': 'application/json' }).end(
+            JSON.stringify({
+              id: 'cmpl-framing', object: 'chat.completion',
+              choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+              framing: {
+                contentLength: req.headers['content-length'] ?? null,
+                transferEncoding: req.headers['transfer-encoding'] ?? null,
+                bytes: body.length,
+              },
+            }),
+          );
+          return;
+        }
+        if (json.model === 'mock-fail') {
+          res.writeHead(500, { 'content-type': 'application/json' }).end(
+            JSON.stringify({ error: { message: 'CUDA out of memory', type: 'server_error', code: 'oom' } }),
+          );
+          return;
+        }
         if (json.stream === true) {
           res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
           const chunksOut = [

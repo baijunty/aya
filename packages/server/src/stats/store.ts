@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import type { BackendEventRow, RequestLog } from '@aya/core';
 import { logger } from '../log.js';
 
-const SCHEMA_VERSION = '1';
+const SCHEMA_VERSION = '2';
 
 const DDL = `
 CREATE TABLE IF NOT EXISTS request_logs(
@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS request_logs(
   latency_ms INT, backend_ms INT, ttft_ms INT,
   prompt_tokens INT, completion_tokens INT, total_tokens INT, cached_tokens INT,
   tokens_estimated INT, req_bytes INT, resp_bytes INT, req_summary TEXT,
+  req_raw TEXT, resp_raw TEXT,
   timeline TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rl_ts ON request_logs(ts_start);
@@ -40,11 +41,24 @@ export class StatsStore {
     this.db = new Database(path);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    this.migrate();
     this.db.exec(DDL);
     const row = this.db.prepare(`SELECT value FROM log_meta WHERE key='schema_version'`).get() as { value: string } | undefined;
     if (!row) {
       this.db.prepare(`INSERT INTO log_meta(key,value) VALUES('schema_version',?)`).run(SCHEMA_VERSION);
     }
+  }
+
+  /** 老库补列：v1 → v2 增加 req_raw / resp_raw（失败请求的原始报文） */
+  private migrate(): void {
+    const cols = this.db.prepare(`PRAGMA table_info(request_logs)`).all() as Array<{ name: string }>;
+    if (cols.length === 0) return; // 新库，DDL 直接建 v2
+    const has = (n: string) => cols.some((c) => c.name === n);
+    if (!has('req_raw')) this.db.exec(`ALTER TABLE request_logs ADD COLUMN req_raw TEXT`);
+    if (!has('resp_raw')) this.db.exec(`ALTER TABLE request_logs ADD COLUMN resp_raw TEXT`);
+    this.db
+      .prepare(`INSERT INTO log_meta(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(SCHEMA_VERSION);
   }
 
   insertRequestLogs(logs: RequestLog[]): void {
@@ -54,12 +68,12 @@ export class StatsStore {
         request_id, ts_start, ts_end, client_addr, key_id, endpoint, model, backend,
         is_stream, status_code, ok, error, latency_ms, backend_ms, ttft_ms,
         prompt_tokens, completion_tokens, total_tokens, cached_tokens,
-        tokens_estimated, req_bytes, resp_bytes, req_summary, timeline
+        tokens_estimated, req_bytes, resp_bytes, req_summary, req_raw, resp_raw, timeline
       ) VALUES (
         @request_id, @ts_start, @ts_end, @client_addr, @key_id, @endpoint, @model, @backend,
         @is_stream, @status_code, @ok, @error, @latency_ms, @backend_ms, @ttft_ms,
         @prompt_tokens, @completion_tokens, @total_tokens, @cached_tokens,
-        @tokens_estimated, @req_bytes, @resp_bytes, @req_summary, @timeline
+        @tokens_estimated, @req_bytes, @resp_bytes, @req_summary, @req_raw, @resp_raw, @timeline
       )`);
     const tx = this.db.transaction((rows: RequestLog[]) => {
       for (const l of rows) {
@@ -87,6 +101,8 @@ export class StatsStore {
           req_bytes: l.req_bytes,
           resp_bytes: l.resp_bytes,
           req_summary: l.req_summary ? JSON.stringify(l.req_summary) : null,
+          req_raw: l.req_raw ?? null,
+          resp_raw: l.resp_raw ?? null,
           timeline: l.timeline ? JSON.stringify(l.timeline) : null,
         });
       }

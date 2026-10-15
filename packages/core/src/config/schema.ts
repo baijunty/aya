@@ -34,12 +34,17 @@ export const healthCheckSchema = z
 export const backendSchema = z
   .object({
     name: z.string().min(1),
-    type: z.enum(['process', 'remote']),
+    type: z.enum(['process', 'remote', 'cli']),
     base_url: z.string().url().optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
     env: z.record(z.string()).optional(),
     cwd: z.string().optional(),
+    cli_timeout: durationMs.optional(),
+    cli_timeout_ms: z.number().int().optional(),
+    /** 命中即视为后端降级（如 ROCm 初始化失败退回 CPU）的 stdout/stderr 子串，见 cli-runner */
+    fail_on_output: z.array(z.string().min(1)).optional(),
+    output_content_type: z.string().optional(),
     health_check: healthCheckSchema.optional(),
     start_timeout: durationMs.optional(),
     start_timeout_ms: z.number().int().optional(),
@@ -70,8 +75,8 @@ export const backendSchema = z
   })
   .passthrough()
   .superRefine((b, ctx) => {
-    if (b.type === 'process' && !b.command) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['command'], message: `process backend "${b.name}" requires command` });
+    if ((b.type === 'process' || b.type === 'cli') && !b.command) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['command'], message: `${b.type} backend "${b.name}" requires command` });
     }
     if (b.type === 'remote' && !b.base_url) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['base_url'], message: `remote backend "${b.name}" requires base_url` });
@@ -83,6 +88,7 @@ export const backendSchema = z
     stop_grace_period_ms: b.stop_grace_period_ms ?? (b.stop_grace_period ?? 60_000),
     idle_timeout_ms: b.idle_timeout_ms ?? (b.idle_timeout ?? 900_000),
     queue_timeout_ms: b.queue_timeout_ms ?? (b.queue_timeout ?? 120_000),
+    cli_timeout_ms: b.cli_timeout_ms ?? (b.cli_timeout ?? 300_000),
   }));
 
 export const modelSchema = z.object({
@@ -115,6 +121,19 @@ export const serverSchema = z.object({
   listen: z.string().default('127.0.0.1:8000'),
   api_keys: z.array(z.string()).default([]),
   static_ui: boolDefault(true),
+  // 看板登录（可选）：配置后前端需用户名密码登录（会话 Cookie）；
+  // 与 api_keys 并存时，/v1 与 /api/v1 接受「Bearer API Key 或有效登录会话」任一。
+  ui_auth: z
+    .object({
+      username: z.string().min(1),
+      password: z.string().min(1),
+      session_ttl: durationMs.optional(),
+      session_ttl_ms: z.number().int().optional(),
+    })
+    .optional()
+    .transform((u) =>
+      u ? { ...u, session_ttl_ms: u.session_ttl_ms ?? (u.session_ttl ?? 7 * 24 * 3600_000) } : undefined,
+    ),
 });
 
 export const storageSchema = z.object({
@@ -127,9 +146,13 @@ export const proxySchema = z.object({
   idle_response_timeout: durationMs.optional(),
   idle_response_timeout_ms: z.number().int().optional(),
   max_upload_bytes: z.number().int().positive().optional(),
+  log_raw_on_error: boolDefault(true),
+  raw_log_max_bytes: z.number().int().positive().optional(),
 }).transform((p) => ({
   idle_response_timeout_ms: p.idle_response_timeout_ms ?? (p.idle_response_timeout ?? 120_000),
   max_upload_bytes: p.max_upload_bytes ?? 104_857_600,
+  log_raw_on_error: p.log_raw_on_error,
+  raw_log_max_bytes: p.raw_log_max_bytes ?? 8192,
 }));
 
 export const appConfigSchema = z

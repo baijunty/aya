@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import { appConfigSchema, type ParsedAppConfig } from './schema.js';
 import type { AppConfig } from '../model/types.js';
@@ -28,14 +29,21 @@ export function parseConfigText(text: string): AppConfig {
   return parsed.data as AppConfig;
 }
 
-export function loadConfigFile(path: string): AppConfig {
+/**
+ * 读取配置文件。storage.path 的相对路径按「配置文件所在目录」解析为绝对路径：
+ * 数据目录（db 及同级的 voices/、logs/）只跟配置文件走，与进程 cwd 无关，
+ * 从任意目录启动看到的都是同一份数据。
+ */
+export function loadConfigFile(configPath: string): AppConfig {
   let text: string;
   try {
-    text = readFileSync(path, 'utf8');
+    text = readFileSync(configPath, 'utf8');
   } catch (e) {
-    throw new ConfigError(`cannot read config file "${path}": ${(e as Error).message}`);
+    throw new ConfigError(`cannot read config file "${configPath}": ${(e as Error).message}`);
   }
-  return parseConfigText(text);
+  const cfg = parseConfigText(text);
+  cfg.storage.path = path.resolve(path.dirname(path.resolve(configPath)), cfg.storage.path);
+  return cfg;
 }
 
 export type { ParsedAppConfig };

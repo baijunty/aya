@@ -1,9 +1,18 @@
 // 管理/统计 API 客户端
 const BASE = '';
 
+// 会话过期（401）全局广播：App 监听后弹出登录页
+export const AUTH_EXPIRED_EVENT = 'aya-auth-expired';
+function notifyAuthExpired(status: number): void {
+  if (status === 401) window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path);
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    notifyAuthExpired(res.status);
+    throw new Error(`${res.status} ${await res.text()}`);
+  }
   return (await res.json()) as T;
 }
 
@@ -11,7 +20,36 @@ async function post<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, { method: 'POST' });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-  if (!res.ok && res.status !== 202) throw new Error(`${res.status} ${text}`);
+  if (!res.ok && res.status !== 202) {
+    notifyAuthExpired(res.status);
+    throw new Error(`${res.status} ${text}`);
+  }
+  return json as T;
+}
+
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok && res.status !== 202) {
+    notifyAuthExpired(res.status);
+    throw new Error(`${res.status} ${text}`);
+  }
+  return json as T;
+}
+
+async function del<T>(path: string): Promise<T> {
+  const res = await fetch(BASE + path, { method: 'DELETE' });
+  const text = await res.text();
+  const json = text ? JSON.parse(text) : {};
+  if (!res.ok) {
+    notifyAuthExpired(res.status);
+    throw new Error(`${res.status} ${text}`);
+  }
   return json as T;
 }
 
@@ -62,8 +100,14 @@ export interface RequestRow {
   error: string | null;
   latency_ms: number;
   ttft_ms: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
   total_tokens: number | null;
   cached_tokens: number | null;
+  /** prefill 速度 tok/s（流式请求，ttft−排队 估算） */
+  pp_tokens_s: number | null;
+  /** 解码速度 tok/s（流式请求，latency−ttft 估算） */
+  tg_tokens_s: number | null;
 }
 
 export interface ResourceInfo {
@@ -71,6 +115,15 @@ export interface ResourceInfo {
   mem: { total_mb: number; free_mb: number };
   reserved: Array<{ backend: string; mem_mb: number; phase: string }>;
   load_ops: Array<{ backend: string; state: string; victims: string[]; waiters: number }>;
+}
+
+export interface Voice {
+  id: string;
+  object: string;
+  created_at: number;
+  name: string;
+  type: string;
+  metadata?: { filename?: string | null; content_type?: string | null; bytes?: number; consent?: string | null };
 }
 
 export const api = {
@@ -98,4 +151,27 @@ export const api = {
   startBackend: (name: string) => post<Record<string, unknown>>(`/api/v1/backends/${name}/start`),
   stopBackend: (name: string) => post<Record<string, unknown>>(`/api/v1/backends/${name}/stop`),
   restartBackend: (name: string) => post<Record<string, unknown>>(`/api/v1/backends/${name}/restart`),
+  voices: () => get<{ object: string; data: Voice[] }>('/v1/audio/voices'),
+  uploadVoice: (name: string, file: File, consent?: string) => {
+    const fd = new FormData();
+    fd.append('name', name);
+    if (consent) fd.append('consent', consent);
+    fd.append('audio_sample', file, file.name);
+    return fetch(BASE + '/v1/audio/voices', { method: 'POST', body: fd }).then(async (res) => {
+      const text = await res.text();
+      const json = text ? JSON.parse(text) : {};
+      if (!res.ok) {
+        notifyAuthExpired(res.status);
+        throw new Error(`${res.status} ${text}`);
+      }
+      return json as Voice;
+    });
+  },
+  renameVoice: (id: string, name: string) => postJson<Voice>(`/v1/audio/voices/${id}`, { name }),
+  deleteVoice: (id: string) => del<{ id: string; deleted: boolean }>(`/v1/audio/voices/${id}`),
+  voiceSampleUrl: (id: string) => `${BASE}/v1/audio/voices/${id}?sample=1`,
+  authMe: () => get<{ ui_auth: boolean; user: string | null; via: string }>('/api/v1/auth/me'),
+  login: (username: string, password: string) =>
+    postJson<{ status: string; user: string; expires_at: number }>('/api/v1/auth/login', { username, password }),
+  logout: () => post<{ status: string }>('/api/v1/auth/logout'),
 };

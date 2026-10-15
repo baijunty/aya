@@ -139,6 +139,7 @@ export class ResourceManager {
       deadline: started + this.resourcesCfg.evict_wait_timeout_ms,
     };
     this.ops.set(cfg.name, op);
+    let loggedPlan: string | undefined;
 
     for (;;) {
       const snap = this.probe.snapshot();
@@ -159,13 +160,14 @@ export class ResourceManager {
         op.error = detail;
         throw AyaErrors.resourceUnavailable(detail);
       }
-      // 构建驱逐计划
+      // 构建驱逐计划。busy 后端同样是候选（allow_evict_busy=false 只是不打断，
+      // 等其当前请求跑完闲置后再驱逐）——否则 agent 持续占用内存时，新请求会被立刻 503
       const candidates = selectEvictCandidates(
         this.control.listConfigs()
           .map((c) => ({ cfg: c, rt: this.control.getRuntime(c.name) }))
           .filter((x): x is { cfg: BackendConfig; rt: BackendRuntime } => x.rt !== undefined),
         cfg.name,
-        this.resourcesCfg.allow_evict_busy,
+        true,
       );
       const plan = planEviction(candidates, admission);
       if (candidates.length === 0) {
@@ -176,20 +178,34 @@ export class ResourceManager {
       }
       op.state = 'evicting';
       op.victims = plan.victims;
-      logger.info(
-        { backend: cfg.name, need_mb: need, free_mb: admission.free_mb, victims: plan.victims },
-        'memory insufficient, waiting for eviction candidates to idle',
-      );
+      if (loggedPlan !== plan.victims.join(',')) {
+        loggedPlan = plan.victims.join(',');
+        logger.info(
+          { backend: cfg.name, need_mb: need, free_mb: admission.free_mb, victims: plan.victims },
+          'memory insufficient, waiting for eviction candidates to idle',
+        );
+      }
+      // 先卸载已闲置的 victim；仍有进行中请求的 victim 等其自然闲置后再卸载
+      // （allow_evict_busy=true 时直接打断）。每轮结束后回到循环顶部重新评估准入，
+      // 在 evict_wait_timeout 内静默等待腾挪，而不是立刻 503。
+      let stopped = 0;
+      let firstBusy: string | undefined;
       for (const victim of plan.victims) {
-        // 等待 victim 自然闲置（默认不打断进行中请求）
         const vrt = this.control.getRuntime(victim);
         if (!vrt || vrt.state !== 'ready') continue;
-        while (vrt.inflight > 0 || vrt.queued > 0) {
-          if (nowMs() > op.deadline) break;
-          await sleep(this.resourcesCfg.probe_interval_ms);
+        if ((vrt.inflight > 0 || vrt.queued > 0) && !this.resourcesCfg.allow_evict_busy) {
+          firstBusy ??= victim;
+          continue;
         }
-        if (this.control.getRuntime(victim)?.state === 'ready') {
-          await this.control.stopBackend(victim, 'evict');
+        await this.control.stopBackend(victim, 'evict');
+        stopped++;
+      }
+      if (!stopped && firstBusy) {
+        const vrt = this.control.getRuntime(firstBusy);
+        if (vrt) {
+          while ((vrt.inflight > 0 || vrt.queued > 0) && nowMs() <= op.deadline) {
+            await sleep(this.resourcesCfg.probe_interval_ms);
+          }
         }
       }
       // 等待 OS 实际回收内存

@@ -3,11 +3,18 @@
 
 server:
   listen: "127.0.0.1:8000"
-  api_keys: []            # 为空则不鉴权（本地默认）；非空时 /v1 与 /api/v1 均需 Bearer Key
+  api_keys: []            # 为空则不鉴权（本地默认）；非空时 /v1 与 /api/v1 需 Bearer Key 或有效登录会话
   static_ui: true         # 托管统计前端构建产物
+  # 看板登录（可选）：配置后前端打开需用户名密码（HttpOnly 会话 Cookie）。
+  # 与 api_keys 并存时二者任一放行：程序化调用带 Bearer Key，看板走登录会话。
+  # ui_auth:
+  #   username: admin
+  #   password: change-me
+  #   session_ttl: 7d     # 缺省 7 天
 
 storage:
   type: sqlite
+  # 相对路径按「本配置文件所在目录」解析，与启动 cwd 无关：db 及同级 voices/、logs/ 恒在 <config_dir>/data/ 下
   path: ./data/aya.db
   retention_days: 90
 
@@ -21,6 +28,8 @@ resources:                # 资源感知加载（防 OOM；统一内存主机只
 proxy:
   idle_response_timeout: 120s   # 上游无字节空闲超时
   max_upload_bytes: 104857600   # ASR/图片上传上限（100MB）
+  log_raw_on_error: true        # 失败请求记录原始请求体/上游错误响应头部（看板详情可见）
+  raw_log_max_bytes: 8192       # 原始报文单侧记录上限，超出截断
 
 backends:
   # 托管进程型：网关拉起/健康检查/闲置卸载
@@ -78,6 +87,126 @@ backends:
     base_url: "http://192.168.1.20:5000/v1"
     auth: { header: Authorization, value: "Bearer sk-xxx" }  # 上游鉴权注入（可选）
 
+  # CLI 型：一次性命令行工具，每请求 spawn 进程生成文件后退出（无 HTTP 上游）。
+  # args 占位符：{input_file} = 请求 input 文本落盘路径，{output_file} = 期望产出路径，
+  #   {speaker_file} = 自定义音色样本（speech 请求 voice=id/name 时注入；未传 voice 时该参数连同 flag 剔除）。
+  # 产出文件按 output_content_type 作为响应体返回；stdout/stderr 归档 data/logs/<backend>.log。
+  # 自定义音色：POST /v1/audio/voices 上传音频样本（multipart: name + audio_sample [+ consent]），
+  #   /v1/audio/speech 的 voice 传音色 id 或 name 即克隆该音色。
+  - name: qwen3-tts-cli
+    type: cli
+    command: /home/bai/ssd/code/llama/llama-tts
+    args:
+      - -m
+      - /mnt/soft/llm/models/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
+      - -mm
+      - /mnt/soft/llm/models/Qwen3-TTS/mmproj-Qwen3-TTS-12Hz-1.7B-Base-bf16.gguf
+      - -f
+      - "{input_file}"
+      - -o
+      - "{output_file}"
+      - --tts-speaker-file
+      - "{speaker_file}"
+    output_content_type: audio/wav
+    cli_timeout: 180s           # 单次生成超时，超时杀进程
+    max_concurrency: 2          # 同时最多 2 个生成进程
+    required_memory: { mem_mb: 3072 }   # 每次生成的内存准入（并发共享一份预留）
+
+  # CLI 型绘图：sd.cpp 的 sd-cli，每请求 spawn 生成 PNG。
+  # 占位符：{prompt} {width} {height} {seed} {batch_count} {negative_prompt} {output_pattern} {ref_image}。
+  # 产出文件（含 %03d 序号）以 OpenAI images JSON（b64_json 数组）返回。
+  # {ref_image}：/v1/images/edits 的参考图（multipart image 或 JSON image=base64，可多张，
+  # 网关展开为 -r a.png -r b.png）；generations 请求无参考图时该 flag 自动剔除。
+  - name: qwen-image-sdcpp
+    type: cli
+    # 用 sd.cpp 的 ROCm/HIP 构建（build/bin/sd-cli）：Vulkan 构建在 int8_convrot 文本编码器上
+    # 会段错误（ggml_vk_tensors_overlap），需 --backend clip=cpu 绕开且更慢
+    command: /mnt/ssd/code/sd.cpp/build/bin/sd-cli
+    args:
+      - --diffusion-model
+      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1-Q8_0.gguf
+      - --vae
+      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
+      - --llm
+      - /mnt/ssd/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
+      - --cfg-scale
+      - "6.0"
+      - --sampling-method
+      - euler
+      - --offload-to-cpu
+      - --mmap
+      - -r
+      - "{ref_image}"
+      - -p
+      - "{prompt}"
+      - -W
+      - "{width}"
+      - -H
+      - "{height}"
+      - -s
+      - "{seed}"
+      - -b
+      - "{batch_count}"
+      - -o
+      - "{output_pattern}"
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:/mnt/ssd/code/sd.cpp/build/bin
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    cli_timeout: 600s
+    # 致命输出熔断（cli 型通用）：stdout/stderr 命中即认定后端降级运行 —— 典型场景是
+    # ROCm 初始化失败，sd-cli 静默退回 CPU（单步 ~6s → ~390s，20 步必然跑满 600s 超时）。
+    # 命中后立刻杀掉进程组并返回 502 backend_degraded（错误里带原始行），不再干等超时。
+    # 注意：只填运行期诊断串，别填可能出现在用户 prompt 里的文本。
+    fail_on_output: ["no ROCm-capable device is detected", "failed to initialize ROCm"]
+    max_concurrency: 1
+    required_memory: { mem_mb: 20480 }
+
+  # Turbo 加速：蒸馏权重 + 固定 8 步 sigma 调度（sd.cpp docs/qwen_image_2.1.md §Turbo）。
+  # --sigmas qwen-image-2.1-turbo 预设（8 步，步数由 sigma 个数决定）；CFG 必须 1.0，采样 euler。
+  - name: qwen-image-sdcpp-turbo
+    type: cli
+    command: /mnt/ssd/code/sd.cpp/build/bin/sd-cli
+    args:
+      - --diffusion-model
+      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_turbo_int8_convrot.safetensors
+      - --vae
+      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
+      - --llm
+      - /mnt/ssd/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
+      - --sigmas
+      - qwen-image-2.1-turbo
+      - --steps
+      - "8"
+      - --cfg-scale
+      - "1.0"
+      - --sampling-method
+      - euler
+      - --offload-to-cpu
+      - --mmap
+      - -r
+      - "{ref_image}"
+      - -p
+      - "{prompt}"
+      - -W
+      - "{width}"
+      - -H
+      - "{height}"
+      - -s
+      - "{seed}"
+      - -b
+      - "{batch_count}"
+      - -o
+      - "{output_pattern}"
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:/mnt/ssd/code/sd.cpp/build/bin
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    cli_timeout: 600s
+    fail_on_output: ["no ROCm-capable device is detected", "failed to initialize ROCm"]
+    max_concurrency: 1
+    required_memory: { mem_mb: 20480 }
+
 models:
   - name: qwen2.5-7b-instruct
     aliases: ["gpt-4o-mini"]    # 现有客户端无缝接入
@@ -91,3 +220,12 @@ models:
   - name: cosyvoice-tts
     backend: tts-remote
     kind: tts
+  - name: qwen3-tts
+    backend: qwen3-tts-cli
+    kind: tts
+  - name: qwen-image
+    backend: qwen-image-sdcpp
+    kind: image
+  - name: qwen-image-turbo      # 8 步蒸馏加速（generations 与 edits 通用）
+    backend: qwen-image-sdcpp-turbo
+    kind: image

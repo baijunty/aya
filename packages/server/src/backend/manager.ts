@@ -30,6 +30,8 @@ interface BackendEntry {
   slotWaiters: Array<() => void>;
   /** 等待 in-flight 归零的观察者（drain 用） */
   drainWaiters: Array<() => void>;
+  /** cli 型：进行中的一次性运行数（内存准入引用计数） */
+  cliActive: number;
   startTimer?: NodeJS.Timeout;
   restartTimer?: NodeJS.Timeout;
   intentionalStop: boolean;
@@ -75,6 +77,7 @@ export class BackendManager {
       readyWaiters: [],
       slotWaiters: [],
       drainWaiters: [],
+      cliActive: 0,
       intentionalStop: false,
     });
   }
@@ -93,6 +96,9 @@ export class BackendManager {
 
   getConfig(name: string): BackendConfig | undefined {
     return this.entries.get(name)?.cfg;
+  }
+  get logDir(): string {
+    return this.deps.logDir;
   }
   getRuntime(name: string): BackendRuntime | undefined {
     return this.entries.get(name)?.rt;
@@ -122,6 +128,8 @@ export class BackendManager {
     const cfg = e.cfg;
 
     for (;;) {
+      // cli 型：一次性进程，无常驻状态机，直接就绪（并发闸门在下方统一生效）
+      if (cfg.type === 'cli') break;
       const st = e.rt.state;
       if (st === 'draining') throw AyaErrors.backendDraining(name);
       if (st === 'crashed') throw AyaErrors.backendCrashed(name);
@@ -139,15 +147,7 @@ export class BackendManager {
     }
 
     // 并发闸门
-    if (e.rt.inflight >= cfg.max_concurrency) {
-      if (e.rt.queued >= cfg.queue_size) throw AyaErrors.queueFull(name);
-      e.rt.queued++;
-      try {
-        await this.waitForSlot(e, cfg.queue_timeout_ms);
-      } finally {
-        e.rt.queued--;
-      }
-    }
+    await this.acquireSlot(e, cfg);
     e.rt.inflight++;
     let released = false;
     return {
@@ -160,6 +160,55 @@ export class BackendManager {
         this.wakeSlot(e);
       },
     };
+  }
+
+  /**
+   * cli 型运行租约：并发闸门（max_concurrency 个一次性进程）+ 内存准入引用计数
+   * （首个运行 acquireLoadPermit，最后一个 release；驱逐候选判定按 busy 处理）。
+   */
+  async acquireCli(name: string): Promise<Lease> {
+    const e = this.entries.get(name);
+    if (!e) throw AyaErrors.backendNotFound(name);
+    const cfg = e.cfg;
+    await this.acquireSlot(e, cfg);
+    const first = e.cliActive++ === 0;
+    let admitted = false;
+    if (first) {
+      try {
+        await this.deps.resources.acquireLoadPermit(cfg);
+        admitted = true;
+      } catch (err) {
+        e.cliActive--;
+        this.wakeSlot(e);
+        throw err;
+      }
+    }
+    e.rt.inflight++;
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        e.rt.inflight--;
+        e.rt.lastActivityAt = nowMs();
+        if (--e.cliActive === 0 && admitted) this.deps.resources.release(cfg.name);
+        this.wakeDrain(e);
+        this.wakeSlot(e);
+      },
+    };
+  }
+
+  /** 并发闸门：满则排队（queue_size 上限 / queue_timeout 超时） */
+  private async acquireSlot(e: BackendEntry, cfg: BackendConfig): Promise<void> {
+    if (e.rt.inflight >= cfg.max_concurrency) {
+      if (e.rt.queued >= cfg.queue_size) throw AyaErrors.queueFull(cfg.name);
+      e.rt.queued++;
+      try {
+        await this.waitForSlot(e, cfg.queue_timeout_ms);
+      } finally {
+        e.rt.queued--;
+      }
+    }
   }
 
   private waitReady(e: BackendEntry, timeoutMs: number): Promise<void> {
@@ -211,10 +260,11 @@ export class BackendManager {
   }
 
   // ——— 启动 ———
-  /** 主动启动（经资源准入）。并发调用合并。 */
+  /** 主动启动（经资源准入）。并发调用合并。cli 型无常驻进程，直接返回。 */
   async startBackend(name: string): Promise<void> {
     const e = this.entries.get(name);
     if (!e) throw AyaErrors.backendNotFound(name);
+    if (e.cfg.type === 'cli') return;
     if (e.rt.state === 'ready') return;
     if (e.rt.state === 'starting') {
       return this.waitReady(e, e.cfg.start_timeout_ms);
@@ -400,6 +450,7 @@ export class BackendManager {
   async stopBackend(name: string, reason: StopReason, force = false): Promise<void> {
     const e = this.entries.get(name);
     if (!e) return;
+    if (e.cfg.type === 'cli') return; // 无常驻进程可停
     if (e.rt.state === 'stopped') return;
     if (e.rt.state === 'ready' || e.rt.state === 'crashed' || e.rt.state === 'starting') {
       this.setState(e, 'stop');
@@ -466,7 +517,8 @@ export class BackendManager {
     return {
       name: e.cfg.name,
       type: e.cfg.type,
-      state: e.rt.state,
+      // cli 型无常驻进程：按需 spawn，始终可服务
+      state: e.cfg.type === 'cli' ? 'ready' : e.rt.state,
       inflight: e.rt.inflight,
       queued: e.rt.queued,
       uptime_ms: e.rt.readyAt ? now - e.rt.readyAt : 0,

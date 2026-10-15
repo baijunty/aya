@@ -83,8 +83,47 @@ select, input[type="text"] {
   background: var(--panel2); color: var(--text); border: 1px solid var(--border);
   border-radius: 6px; padding: 5px 8px; font-size: 13px;
 }
+input[type="file"] {
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; font-size: 13px;
+}
+input[type="file"]::file-selector-button {
+  background: var(--panel); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 10px; margin-right: 8px; cursor: pointer;
+}
+input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 .muted { color: var(--muted); }
 .err { color: var(--red); }
 .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
 .bar-track { flex: 1; background: var(--panel2); border-radius: 4px; height: 10px; overflow: hidden; }
 .bar-fill { height: 100%; background: var(--accent); border-radius: 4px; }
+
+.raw {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 10px 12px; font-size: 12px; line-height: 1.5; max-height: 260px;
+  overflow: auto; white-space: pre-wrap; word-break: break-all; margin: 0;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--text);
+}
+
+/* —— 登录页 —— */
+.login-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-card {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 32px 32px 28px; width: 340px; display: flex; flex-direction: column; gap: 14px;
+}
+.login-card .logo { font-size: 24px; font-weight: 700; letter-spacing: 1px; padding: 0; }
+.login-card .logo span { color: var(--accent); }
+.login-sub { margin: -6px 0 4px; color: var(--muted); font-size: 13px; }
+.login-card label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 13px; }
+.login-card input {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 10px; font-size: 14px; outline: none;
+}
+.login-card input:focus { border-color: var(--accent); }
+.login-error { color: var(--red); font-size: 13px; }
+.login-btn { padding: 9px 12px; font-size: 14px; margin-top: 2px; }
+.login-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* —— 顶栏用户区 —— */
+.user-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin-left: 8px; }
+.logout-btn { padding: 3px 10px; font-size: 12px; }

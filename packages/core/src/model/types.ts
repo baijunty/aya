@@ -1,6 +1,10 @@
 // 核心类型定义（见 design.md §3）
 
-export type BackendType = 'process' | 'remote';
+/**
+ * process = 常驻 HTTP 服务（网关托管进程）；remote = 已运行的远程服务；
+ * cli = 一次性命令行工具（每请求 spawn，产出文件后退出，如 llama-tts 生成 wav）。
+ */
+export type BackendType = 'process' | 'remote' | 'cli';
 export type ModelKind = 'chat' | 'completion' | 'embedding' | 'image' | 'asr' | 'tts';
 
 export interface HealthCheckConfig {
@@ -20,6 +24,15 @@ export interface BackendConfig {
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
+  /** cli 型：单次生成超时（ms），超时杀进程 */
+  cli_timeout_ms: number;
+  /**
+   * cli 型：stdout/stderr 命中这些子串（不区分大小写）即判定后端已降级（如 GPU 不可用退回 CPU），
+   * 立即杀掉进程组并以 backend_degraded 快速失败，不陪跑满 cli_timeout。
+   */
+  fail_on_output?: string[];
+  /** cli 型：产出音频的 Content-Type（默认 audio/wav） */
+  output_content_type?: string;
   /** 供命令行模板插值使用的自定义参数（{model_path} 等） */
   [extra: string]: unknown;
   health_check?: HealthCheckConfig;
@@ -63,6 +76,8 @@ export interface ServerConfig {
   listen: string;
   api_keys: string[];
   static_ui: boolean;
+  /** 看板登录（可选）：配置后前端需用户名密码登录（会话 Cookie） */
+  ui_auth?: { username: string; password: string; session_ttl_ms: number };
 }
 
 export interface StorageConfig {
@@ -74,6 +89,10 @@ export interface StorageConfig {
 export interface ProxyConfig {
   idle_response_timeout_ms: number;
   max_upload_bytes: number;
+  /** 失败请求记录原始请求/响应头部（排障用），默认开启 */
+  log_raw_on_error: boolean;
+  /** 原始报文单侧记录上限（字节），超出截断 */
+  raw_log_max_bytes: number;
 }
 
 export interface AppConfig {
@@ -163,6 +182,10 @@ export interface RequestLog {
   resp_bytes: number;
   /** 参数摘要，不含正文 */
   req_summary?: Record<string, unknown>;
+  /** 失败时记录的请求体头部原文（log_raw_on_error 开启时） */
+  req_raw?: string;
+  /** 失败时记录的上游响应头部原文（log_raw_on_error 开启时） */
+  resp_raw?: string;
   /** 时间线（ms）：排队 / 后端启动 / 后端首包 / 总时长 */
   timeline?: { queue: number; backend_start: number; backend_ttfb: number; total: number };
 }

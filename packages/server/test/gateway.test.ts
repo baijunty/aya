@@ -34,6 +34,12 @@ models:
     backend: mock
     kind: chat
     context_length: 4096
+  - name: mock-fail
+    backend: mock
+    kind: chat
+  - name: mock-framing
+    backend: mock
+    kind: chat
   - name: mock-embed
     backend: mock
     kind: embedding
@@ -118,6 +124,20 @@ describe('Aya gateway (remote mock backend)', () => {
     expect(res.status).toBe(200);
   });
 
+  it('大请求体也必须带 content-length（不得退化为 chunked，gufo 会 400 malformed request）', async () => {
+    // 超过单个 socket 读/PassThrough 缓冲（约 64KB）时，undici 无法自行推出 body 长度，
+    // 若不显式透传客户端的 Content-Length 就会发 Transfer-Encoding: chunked。
+    const res = await post('/v1/chat/completions', {
+      model: 'mock-framing',
+      messages: [{ role: 'user', content: 'x'.repeat(80 * 1024) }],
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.framing.bytes).toBeGreaterThan(64 * 1024);
+    expect(j.framing.transferEncoding).toBeNull();
+    expect(Number(j.framing.contentLength)).toBe(j.framing.bytes);
+  });
+
   it('embeddings 透传', async () => {
     const res = await post('/v1/embeddings', { model: 'mock-embed', input: 'hello' });
     expect(res.status).toBe(200);
@@ -169,6 +189,36 @@ describe('Aya gateway (remote mock backend)', () => {
     expect(res.status).toBe(400);
     const j = await res.json();
     expect(j.error.code).toBe('endpoint_kind_mismatch');
+  });
+
+  it('失败请求记录原始请求/响应（req_raw / resp_raw / error 提取上游信息）', async () => {
+    const res = await post('/v1/chat/completions', {
+      model: 'mock-fail',
+      messages: [{ role: 'user', content: 'boom-raw-content' }],
+    });
+    expect(res.status).toBe(500);
+    const rid = res.headers.get('x-aya-request-id')!;
+    await new Promise((r) => setTimeout(r, 400));
+    const detail = await (await fetch(`${base}/api/v1/stats/requests/${rid}`)).json();
+    expect(detail.ok).toBe(false);
+    // error 列提取上游 OpenAI 风格错误信息
+    expect(detail.error).toContain('CUDA out of memory');
+    // 原始请求体头部（截断原文）
+    expect(detail.req_raw).toContain('mock-fail');
+    expect(detail.req_raw).toContain('boom-raw-content');
+    // 上游错误响应头部
+    expect(detail.resp_raw).toContain('CUDA out of memory');
+  });
+
+  it('拦截请求（缺 model）也记录 req_raw', async () => {
+    const res = await post('/v1/chat/completions', { messages: [{ role: 'user', content: 'no-model-here' }] });
+    expect(res.status).toBe(400);
+    await new Promise((r) => setTimeout(r, 400));
+    const list = await (await fetch(`${base}/api/v1/stats/requests?status=fail&model=`)).json();
+    const row = list.items.find((i: { error: string }) => i.error === 'missing_model');
+    expect(row).toBeTruthy();
+    const detail = await (await fetch(`${base}/api/v1/stats/requests/${row.request_id}`)).json();
+    expect(detail.req_raw).toContain('no-model-here');
   });
 
   it('统计 API：summary 有数据（含 cached_tokens）', async () => {

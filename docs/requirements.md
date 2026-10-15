@@ -79,7 +79,7 @@
 | 字段 | 说明 |
 |---|---|
 | `name` | 后端唯一名 |
-| `type` | `process`（托管进程）或 `remote`（远程 HTTP 服务） |
+| `type` | `process`（托管进程）、`remote`（远程 HTTP 服务）或 `cli`（一次性命令行工具，每请求 spawn 生成文件后退出，如 llama-tts） |
 | `command` / `args` / `env` / `cwd` | process 型：启动命令、参数、环境变量、工作目录 |
 | `base_url` | remote 型 / process 型：后端 HTTP 地址（process 型启动后用于健康检查与转发） |
 | `health_check` | 健康检查 URL、间隔、成功判定（状态码/JSON 字段） |

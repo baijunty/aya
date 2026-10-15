@@ -13,7 +13,7 @@
 ## 0. 通用约定
 
 - **Base URL**：`http://<host>:<port>`（默认 `127.0.0.1:8000`）。客户端把 OpenAI SDK 的 `base_url` 指到这里即可。
-- **鉴权**：`server.api_keys` 为空则全部放行；非空时所有 `/v1/*` 与 `/api/v1/*` 需 `Authorization: Bearer <key>`。`/healthz` 与静态前端资源（`/`、`/assets/*`）不鉴权。
+- **鉴权**：`server.api_keys` 为空且未配置 `server.ui_auth` 则全部放行。`api_keys` 非空时 `/v1/*` 与 `/api/v1/*` 需 `Authorization: Bearer <key>`；配置 `ui_auth`（看板登录）后，同一批端点接受「Bearer API Key **或** 有效登录会话 Cookie（`aya_session`，HttpOnly）」任一——程序化调用带 Key，看板走登录。`/healthz`、`/api/v1/auth/login|logout` 与静态前端资源（`/`、`/assets/*`）不鉴权。
 - **请求 ID**：网关为每个 `/v1` 请求生成 `request_id`，响应头回 `X-Aya-Request-Id`，同时落库，供明细下钻。
 - **透传**：`/v1/*` 的请求体、应答体、状态码、关键响应头原样透传；仅注入/覆盖必要头（见各接口）。
 - **错误体**（网关自身产生）：
@@ -70,6 +70,26 @@
 - JSON 请求透传；`model` 路由（kind=image）。
 - 统计摘要记 `n`、`size`、`response_format`；token 不适用（记 0，`req_summary` 存图片参数）。
 - 响应透传（b64_json 或 url）。
+- cli 型后端（如 sd.cpp 的 sd-cli）：网关解析 `prompt`/`size`/`n`/`seed` 注入命令占位符
+  （`{prompt}` `{width}` `{height}` `{seed}` `{batch_count}` `{output_pattern}`），spawn 生成 PNG 后
+  以 OpenAI images JSON（`data[].b64_json`）返回。
+- Turbo 加速（Qwen-Image-2.1-Turbo）：纯后端参数，网关无特判——蒸馏权重 +
+  `--sigmas qwen-image-2.1-turbo --steps 8 --cfg-scale 1.0 --sampling-method euler`
+  （sigma 预设 = 1.0,0.978453,...,0.0，实际步数由 sigma 个数决定）。单独注册一个 cli 后端与
+  模型名（如 `qwen-image-turbo`）即可与基础版并存、按 `model` 路由切换。
+
+### A5b. `POST /v1/images/edits` — 图片编辑
+
+- 两种请求形态，均路由到 kind=image 的 cli 后端：
+  - **multipart/form-data**（OpenAI 官方形态）：`model` + `prompt` + `image`（可多个 `image[]`）
+    文件部分，可选 `n`/`size`/`seed`/`negative_prompt` 字段；受 `max_upload_bytes` 限制。
+  - **JSON**：`prompt` + `image`（base64 字符串或其数组，兼容 `data:image/...;base64,` 前缀）。
+- 参考图落盘临时目录后经 `{ref_image}` 占位符注入命令（sd.cpp 为 `-r`，多张展开为
+  `-r a.png -r b.png`，顺序保持）；请求无参考图时该 flag 连同占位符一并剔除，
+  同一后端可同时服务 generations。
+- 响应与 A5 相同（`data[].b64_json`）；`req_summary` 额外记 `ref_images` 张数。
+- Qwen-Image-2.1 编辑要求：文本编码器需带 vision tower（safetensors int8_convrot 自带；
+  GGUF 文本编码器需配套 `--llm_vision` mmproj）。分辨率取 `size`，建议 32 的倍数。
 
 ### A6. `POST /v1/audio/transcriptions` — ASR（语音转文字）
 
@@ -86,6 +106,18 @@
 - JSON 请求（`model`、`input`、`voice`、`response_format`、`speed`）透传。
 - 响应为**二进制音频流**（`audio/mpeg|wav|...`），边收边发，累计 `resp_bytes`。
 - 统计：`req_summary` 记 `input` 字符数、`voice`、`response_format`；token 记 0。
+- cli 型后端：`voice` 传自定义音色 id 或 name（见 A8b），网关把音色样本经 `{speaker_file}` 占位符注入命令。
+
+### A8b. 自定义音色（OpenAI custom voices 风格）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/v1/audio/voices` | multipart 上传：`name`（必填）、`audio_sample`（音频样本文件，必填）、`consent`（可选）。返回 voice 对象 `{id, object:"audio.voice", created_at, name, type:"audio_sample"}` |
+| GET | `/v1/audio/voices` | 音色列表 `{object:"list", data:[...]}` |
+| POST | `/v1/audio/voices/{id}` | JSON `{name}` 改名 |
+| DELETE | `/v1/audio/voices/{id}` | 删除（连同样本文件） |
+
+样本存 `data/voices/<id>.<ext>`，元数据在 SQLite `voices` 表。`/v1/audio/speech` 的 `voice` 按 id 精确匹配，未命中再按 name（大小写不敏感）；都不存在 → 404 `voice_not_found`。
 
 ### A9. `GET /healthz` — 健康检查（不鉴权）
 
@@ -105,7 +137,17 @@
 
 ## B. 管理 / 统计接口（`/api/v1/*`）
 
-供前端看板与运维使用；启用鉴权时需 Bearer Key。时间参数统一用**毫秒时间戳** `from`/`to`，缺省 `to=now`、`from=now-7d`。
+供前端看板与运维使用；启用鉴权时需 Bearer Key 或有效登录会话。时间参数统一用**毫秒时间戳** `from`/`to`，缺省 `to=now`、`from=now-7d`。
+
+### B0. 看板登录（`ui_auth` 配置后启用）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/v1/auth/login` | 不鉴权。JSON `{username, password}`；成功下发 `Set-Cookie: aya_session=<64hex>; HttpOnly; SameSite=Lax; Max-Age=<ttl>` 并返回 `{status,user,expires_at}`；错误 401 `invalid_credentials` |
+| POST | `/api/v1/auth/logout` | 清除会话 Cookie（幂等） |
+| GET | `/api/v1/auth/me` | 鉴权。返回 `{ui_auth, user, via}`（via=session/api_key）；未登录 401 `session_expired`，前端据此弹登录页 |
+
+会话为内存态（网关重启失效），TTL 由 `server.ui_auth.session_ttl` 控制（缺省 7d）；密码仅存 SHA-256 摘要，比较用 timingSafeEqual。前端任意管理请求收到 401 即回到登录页。
 
 ### B1. 后端与模型管理
 
@@ -288,12 +330,16 @@
 |---|---|---|---|
 | 400 | invalid_request_error | missing_model | 缺 `model` 或 JSON 非法 |
 | 400 | invalid_request_error | endpoint_kind_mismatch | 接口与模型 kind 不符 |
-| 401 | authentication_error | invalid_api_key | Bearer 缺失/错误 |
+| 401 | authentication_error | invalid_api_key | Bearer 缺失/错误（未启用 ui_auth 时） |
+| 401 | authentication_error | invalid_credentials | 看板登录用户名/密码错误 |
+| 401 | authentication_error | session_expired | 启用了 ui_auth 但会话 Cookie 缺失/过期 |
 | 404 | invalid_request_error | model_not_found | 模型未配置/禁用 |
 | 404 | invalid_request_error | backend_not_found | 管理接口后端名不存在 |
 | 413 | invalid_request_error | payload_too_large | 上传超 `max_upload_bytes` |
 | 429 | rate_limit_error | queue_full | 后端排队已满 |
 | 502 | bad_gateway | backend_start_failed | 后端启动失败/超时 |
+| 502 | bad_gateway | cli_failed | cli 型后端非零退出/超时/无产出 |
+| 502 | bad_gateway | backend_degraded | cli 型后端输出命中 `fail_on_output`（如 GPU 不可用静默退回 CPU），已整组杀进程快速失败 |
 | 502 | bad_gateway | upstream_stall | 上游空闲超时（无字节） |
 | 503 | service_unavailable | backend_stopped | 后端未运行且 `auto_start=false` |
 | 503 | service_unavailable | backend_draining | 后端正在优雅停止 |

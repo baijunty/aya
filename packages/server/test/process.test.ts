@@ -221,4 +221,92 @@ models:
     expect(ev.events.map((e: { event: string }) => e.event)).toContain('evict_stop');
     await aya.shutdown();
   }, 40000);
+
+  it('驱逐腾挪（victim 正忙）：等待其闲置后卸载，不立刻 503', async () => {
+    // va 上有一个进行中的慢请求（inflight>0）。此时 load vb：
+    // 旧行为：busy 后端不算候选 → 立刻 503 resource_unavailable
+    // 新行为：静默等待 va 当前请求结束 → 驱逐 → vb ready
+    const { aya, base } = await boot(
+      head(18706) +
+        `
+backends:
+  - name: va
+    type: process
+    command: node
+    args: ["{mockScript}", "--port", "18717", "--slow-ms", "2500"]
+    base_url: "http://127.0.0.1:18717/v1"
+    health_check: { path: /health, interval: 300ms }
+    start_timeout: 15s
+    idle_timeout: 0
+    priority: 1
+    required_memory: { mem_mb: 60000 }
+  - name: vb
+    type: process
+    command: node
+    args: ["{mockScript}", "--port", "18718"]
+    base_url: "http://127.0.0.1:18718/v1"
+    health_check: { path: /health, interval: 300ms }
+    start_timeout: 15s
+    idle_timeout: 0
+    priority: 5
+    required_memory: { mem_mb: 60000 }
+models:
+  - { name: achat, backend: va, kind: chat }
+  - { name: bchat, backend: vb, kind: chat }
+`,
+    );
+    // 先让 va ready，再打一个 2.5s 的慢请求使其 busy
+    expect((await fetch(`${base}/api/v1/models/achat/load`, { method: 'POST' })).status).toBe(200);
+    const slowReq = fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'achat', messages: [] }),
+    }).then((r) => r.status);
+
+    await sleep(300); // 慢请求已进入 va（inflight=1）
+    const t0 = Date.now();
+    const rB = await fetch(`${base}/api/v1/models/bchat/load?wait=true&timeout_ms=25000`, { method: 'POST' });
+    const waited = Date.now() - t0;
+    expect(rB.status).toBe(200); // 不是 503
+    const jB = await rB.json();
+    expect(jB.status).toBe('ready');
+    expect(waited).toBeGreaterThanOrEqual(1000); // 确实等待了 victim 闲置，而非瞬间返回
+    expect(await slowReq).toBe(200); // 慢请求未被中断
+
+    const st = await (await fetch(`${base}/api/v1/backends`)).json();
+    const byName = Object.fromEntries(st.backends.map((b: { name: string }) => [b.name, b]));
+    expect(byName.va.state).toBe('stopped'); // 闲置后被驱逐
+    expect(byName.vb.state).toBe('ready');
+    await aya.shutdown();
+  }, 40000);
+
+  it('被拦截的请求（路由失败/缺 model）也写入统计', async () => {
+    const { aya, base } = await boot(head(18707) + procBackend(18719));
+
+    // 未知模型 → 404 model_not_found（未进入 forward）
+    const r1 = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'no-such-model', messages: [] }),
+    });
+    expect(r1.status).toBe(404);
+
+    // 缺 model → 400 missing_model
+    const r2 = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(r2.status).toBe(400);
+
+    await sleep(400); // StatsWriter 批量落库间隔 200ms
+    const list = await (await fetch(`${base}/api/v1/stats/requests?status=fail&page_size=10`)).json();
+    const errs = list.items.map((i: { error: string }) => i.error);
+    expect(errs).toContain('model_not_found');
+    expect(errs).toContain('missing_model');
+    const notFound = list.items.find((i: { error: string }) => i.error === 'model_not_found');
+    expect(notFound.model).toBe('no-such-model');
+    expect(notFound.status_code).toBe(404);
+    await aya.shutdown();
+  }, 20000);
 });

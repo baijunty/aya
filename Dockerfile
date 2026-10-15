@@ -22,6 +22,6 @@ RUN pnpm install --prod --ignore-scripts=false
 COPY --from=build /app/packages/core/dist packages/core/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
 COPY --from=build /app/packages/web/dist packages/web/dist
-EXPOSE 8000
+EXPOSE 8080
 ENTRYPOINT ["node", "packages/server/dist/index.js"]
 CMD ["--config", "/etc/aya/config.yaml"]

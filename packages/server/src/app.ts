@@ -16,7 +16,9 @@ import { LoadOps } from './resource/load-ops.js';
 import { StatsStore } from './stats/store.js';
 import { StatsWriter } from './stats/writer.js';
 import { purgeRetention } from './stats/queries.js';
+import { VoiceStore } from './voices/store.js';
 import { AuthManager } from './http/auth.js';
+import { SessionStore } from './http/sessions.js';
 import { registerRoutes, type AppDeps } from './http/routes.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -33,10 +35,12 @@ export function createApp(configPath: string): AyaApp {
   let cfg = loadConfigFile(configPath);
   let router = new ModelRouter(cfg);
   const auth = new AuthManager(cfg.server.api_keys);
+  const sessions = new SessionStore(cfg.server.ui_auth);
 
   const store = new StatsStore(cfg.storage.path);
   const stats = new StatsWriter(store);
   stats.start();
+  const voices = new VoiceStore(store.db, path.join(path.dirname(cfg.storage.path), 'voices'));
 
   const logDir = path.join(path.dirname(cfg.storage.path), 'logs');
   let managerRef!: BackendManager;
@@ -82,7 +86,9 @@ export function createApp(configPath: string): AyaApp {
     resources,
     stats,
     store,
+    voices,
     auth,
+    sessions,
     loadModel: (n, w, t) => loadOps.load(n, w, t),
     unloadModel: (n, f) => loadOps.unload(n, f),
     reloadConfig: async () => {
@@ -112,6 +118,7 @@ export function createApp(configPath: string): AyaApp {
     cfg = next;
     router = new ModelRouter(next);
     auth.setKeys(next.server.api_keys);
+    sessions.setCreds(next.server.ui_auth);
     for (const b of next.backends) manager.updateConfig(b);
     for (const name of prevNames) {
       if (!nextNames.has(name)) void manager.removeBackend(name);

@@ -6,6 +6,16 @@ export interface RunnerHooks {
   onExit: (code: number | null, signal: string | null) => void;
 }
 
+/** 参数插值：{model_path} 等占位符由配置字段填充 */
+export function interpolateArgs(cfg: BackendConfig): string[] {
+  return (cfg.args ?? []).map((a) =>
+    a.replace(/\{(\w+)\}/g, (m, key: string) => {
+      const v = (cfg as Record<string, unknown>)[key];
+      return typeof v === 'string' ? v : m;
+    }),
+  );
+}
+
 /**
  * 托管进程运行器：detached 进程组启动，SIGTERM→超时 SIGKILL 整组（design.md §4.2/§4.3）。
  */
@@ -23,13 +33,7 @@ export class ProcessRunner {
 
   /** 参数插值：{model_path} 等占位符由配置字段填充 */
   interpolateArgs(): string[] {
-    const args = (this.cfg.args ?? []).map((a) =>
-      a.replace(/\{(\w+)\}/g, (m, key: string) => {
-        const v = (this.cfg as Record<string, unknown>)[key];
-        return typeof v === 'string' ? v : m;
-      }),
-    );
-    return args;
+    return interpolateArgs(this.cfg);
   }
 
   start(): void {

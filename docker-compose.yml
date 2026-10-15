@@ -2,10 +2,11 @@ services:
   aya:
     build: .
     ports:
-      - "8000:8000"
+      - "8080:8080"
     volumes:
       - ./config.yaml:/etc/aya/config.yaml:ro
-      - aya-data:/app/data
+      # storage.path 相对路径按配置文件所在目录解析（core/config/loader.ts），数据目录恒为 /etc/aya/data
+      - aya-data:/etc/aya/data
       # 托管后端模型目录按需挂载
       # - /models:/models:ro
     restart: unless-stopped

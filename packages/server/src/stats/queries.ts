@@ -200,13 +200,36 @@ export function queryRequests(store: StatsStore, f: RequestListFilter): { total:
   const items = db
     .prepare(
       `SELECT request_id, ts_start, ts_end, model, endpoint, backend, key_id, is_stream,
-        status_code, ok, error, latency_ms, ttft_ms, total_tokens, cached_tokens
+        status_code, ok, error, latency_ms, ttft_ms, prompt_tokens, completion_tokens,
+        total_tokens, cached_tokens, COALESCE(json_extract(timeline,'$.queue'),0) AS queue_ms
        FROM request_logs WHERE ${whereSql} ORDER BY ts_start DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, f.page_size, offset)
     .map((r) => {
       const row = r as Record<string, unknown>;
-      return { ...row, is_stream: !!row.is_stream, ok: !!row.ok };
+      const out: Record<string, unknown> = { ...row, is_stream: !!row.is_stream, ok: !!row.ok };
+      delete out.queue_ms;
+      const pt = row.prompt_tokens as number | null;
+      const ct = row.completion_tokens as number | null;
+      const cached = row.cached_tokens as number | null;
+      const ttft = row.ttft_ms as number | null;
+      const lat = row.latency_ms as number | null;
+      const queue = (row.queue_ms as number | null) ?? 0;
+      // pp（prefill 速度，tok/s）：流式请求 首包耗时−排队 ≈ prefill 耗时；
+      // 按未命中缓存的 token 计（前缀缓存命中时全量 prompt 会算出天文数字）
+      const prefillMs = ttft != null ? ttft - queue : null;
+      const uncached = pt != null ? pt - (cached ?? 0) : null;
+      out.pp_tokens_s =
+        row.is_stream && uncached != null && uncached > 0 && prefillMs != null && prefillMs > 0
+          ? Number((uncached / (prefillMs / 1000)).toFixed(1))
+          : null;
+      // tg（解码速度，tok/s）：总时长 − 首包 ≈ 解码耗时（非流式无法拆分，不计算）
+      const decodeMs = ttft != null && lat != null ? lat - ttft : null;
+      out.tg_tokens_s =
+        row.is_stream && ct && decodeMs != null && decodeMs > 0
+          ? Number((ct / (decodeMs / 1000)).toFixed(1))
+          : null;
+      return out;
     });
   return { total, items };
 }

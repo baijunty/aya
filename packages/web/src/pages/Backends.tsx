@@ -90,11 +90,11 @@ export function Backends() {
                   </td>
                   <td>
                     {b.type === 'process' && (
-                      <span style={{ display: 'inline-flex', gap: 6 }}>
-                        <button className="btn" disabled={busy === b.name || b.state !== 'stopped'} onClick={() => act(() => api.startBackend(b.name))}>启动</button>
-                        <button className="btn danger" disabled={busy === b.name || b.state === 'stopped'} onClick={() => act(() => api.stopBackend(b.name))}>停止</button>
-                        <button className="btn" disabled={busy === b.name} onClick={() => act(() => api.restartBackend(b.name))}>重启</button>
-                      </span>
+                      b.state === 'stopped' || b.state === 'crashed' ? (
+                        <button className="btn" disabled={busy === b.name} onClick={() => act(() => api.startBackend(b.name))}>启动</button>
+                      ) : (
+                        <button className="btn danger" disabled={busy === b.name} onClick={() => act(() => api.stopBackend(b.name))}>停止</button>
+                      )
                     )}
                   </td>
                 </tr>

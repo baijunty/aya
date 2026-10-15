@@ -79,3 +79,95 @@ describe('API Key 鉴权', () => {
     expect((await fetch(`${base}/healthz`)).status).toBe(200);
   });
 });
+
+describe('看板登录（ui_auth）', () => {
+  let aya2: AyaApp;
+  let base2: string;
+  let mock2: MockBackend;
+
+  beforeAll(async () => {
+    mock2 = await startMockBackend();
+    const tmp = mkdtempSync(path.join(tmpdir(), 'aya-uiauth-'));
+    const cfgPath = path.join(tmp, 'config.yaml');
+    writeFileSync(
+      cfgPath,
+      `
+server:
+  listen: "127.0.0.1:0"
+  api_keys: ["sk-test-111"]
+  static_ui: false
+  ui_auth: { username: admin, password: "change-me", session_ttl: 1h }
+storage: { path: "${path.join(tmp, 'a.db')}" }
+backends:
+  - { name: mock, type: remote, base_url: "${mock2.url}", health_check: { path: /health } }
+models:
+  - { name: m1, backend: mock, kind: chat }
+`,
+    );
+    aya2 = createApp(cfgPath);
+    await aya2.listen();
+    const addr = aya2.app.server.address();
+    base2 = `http://127.0.0.1:${typeof addr === 'object' && addr ? addr.port : 0}`;
+  }, 30000);
+
+  afterAll(async () => {
+    await aya2?.shutdown();
+    await mock2?.close();
+  });
+
+  const cookieOf = (res: Response): string => {
+    const sc = res.headers.get('set-cookie') ?? '';
+    return sc.split(';')[0] ?? '';
+  };
+
+  it('未登录 → /api/v1 401 session_expired；/auth/me 报 ui_auth', async () => {
+    const r = await fetch(`${base2}/api/v1/backends`);
+    expect(r.status).toBe(401);
+    expect((await r.json()).error.code).toBe('session_expired');
+
+    const me = await fetch(`${base2}/api/v1/auth/me`);
+    expect(me.status).toBe(401);
+  });
+
+  it('错误密码 → 401 invalid_credentials；正确 → Cookie 放行', async () => {
+    const bad = await fetch(`${base2}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'wrong' }),
+    });
+    expect(bad.status).toBe(401);
+    expect((await bad.json()).error.code).toBe('invalid_credentials');
+
+    const ok = await fetch(`${base2}/api/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'admin', password: 'change-me' }),
+    });
+    expect(ok.status).toBe(200);
+    const j = await ok.json();
+    expect(j.user).toBe('admin');
+    const cookie = cookieOf(ok);
+    expect(cookie).toMatch(/^aya_session=[0-9a-f]{64}$/);
+
+    // Cookie 放行管理 API 与 /v1
+    const me = await fetch(`${base2}/api/v1/auth/me`, { headers: { cookie } });
+    expect(me.status).toBe(200);
+    const meJ = await me.json();
+    expect(meJ.user).toBe('admin');
+    expect(meJ.via).toBe('session');
+    expect((await fetch(`${base2}/api/v1/backends`, { headers: { cookie } })).status).toBe(200);
+    expect((await fetch(`${base2}/v1/models`, { headers: { cookie } })).status).toBe(200);
+
+    // 登出 → Cookie 失效
+    const out = await fetch(`${base2}/api/v1/auth/logout`, { method: 'POST', headers: { cookie } });
+    expect(out.status).toBe(200);
+    expect((await fetch(`${base2}/api/v1/backends`, { headers: { cookie } })).status).toBe(401);
+  });
+
+  it('Bearer API Key 与登录会话并存：Key 无需 Cookie 即放行', async () => {
+    const r = await fetch(`${base2}/api/v1/backends`, { headers: { authorization: 'Bearer sk-test-111' } });
+    expect(r.status).toBe(200);
+    const me = await fetch(`${base2}/api/v1/auth/me`, { headers: { authorization: 'Bearer sk-test-111' } });
+    expect((await me.json()).via).toBe('api_key');
+  });
+});
