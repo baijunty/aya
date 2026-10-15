@@ -50,7 +50,7 @@ packages/server   Fastify 网关：转发引擎、进程管理、资源管理、
 packages/web      React + Vite + ECharts 统计看板（构建产物由网关静态托管）
 ```
 
-## 本机端到端验证（参考 /mnt/soft/llm 配置的小模型）
+## 端到端验证（真实小模型）
 
 ```bash
 node packages/server/dist/index.js --config config-e2e.yaml

@@ -60,13 +60,13 @@ backends:
     priority: 100               # 高优先级，难被驱逐
     evictable: true             # false = 常驻，永不被驱逐
 
-  # llama.cpp 示例（参考本机 /mnt/soft/llm/config.ini）
+  # llama.cpp 示例
   - name: qwen-llamacpp
     type: process
-    command: /home/bai/ssd/code/vulkan/bin/llama-server
+    command: path/to/llama-server
     args:
       - --model
-      - /mnt/ssd/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
+      - path/to/models/tiny/qwen2.5-0.5b-instruct-q8_0.gguf
       - --host
       - 127.0.0.1
       - --port
@@ -95,12 +95,12 @@ backends:
   #   /v1/audio/speech 的 voice 传音色 id 或 name 即克隆该音色。
   - name: qwen3-tts-cli
     type: cli
-    command: /home/bai/ssd/code/llama/llama-tts
+    command: path/to/llama-tts
     args:
       - -m
-      - /mnt/soft/llm/models/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
+      - path/to/models/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base-Q8_0.gguf
       - -mm
-      - /mnt/soft/llm/models/Qwen3-TTS/mmproj-Qwen3-TTS-12Hz-1.7B-Base-bf16.gguf
+      - path/to/models/Qwen3-TTS/mmproj-Qwen3-TTS-12Hz-1.7B-Base-bf16.gguf
       - -f
       - "{input_file}"
       - -o
@@ -121,14 +121,14 @@ backends:
     type: cli
     # 用 sd.cpp 的 ROCm/HIP 构建（build/bin/sd-cli）：Vulkan 构建在 int8_convrot 文本编码器上
     # 会段错误（ggml_vk_tensors_overlap），需 --backend clip=cpu 绕开且更慢
-    command: /mnt/ssd/code/sd.cpp/build/bin/sd-cli
+    command: path/to/sd.cpp/build/bin/sd-cli
     args:
       - --diffusion-model
-      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1-Q8_0.gguf
+      - path/to/models/qwen-image-2.1/qwen_image_2.1-Q8_0.gguf
       - --vae
-      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
+      - path/to/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
       - --llm
-      - /mnt/ssd/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
+      - path/to/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
       - --cfg-scale
       - "6.0"
       - --sampling-method
@@ -150,7 +150,7 @@ backends:
       - -o
       - "{output_pattern}"
     env:
-      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:/mnt/ssd/code/sd.cpp/build/bin
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:path/to/sd.cpp/build/bin
       ROCM_PATH: /opt/rocm
       HIP_PATH: /opt/rocm
     cli_timeout: 600s
@@ -166,14 +166,14 @@ backends:
   # --sigmas qwen-image-2.1-turbo 预设（8 步，步数由 sigma 个数决定）；CFG 必须 1.0，采样 euler。
   - name: qwen-image-sdcpp-turbo
     type: cli
-    command: /mnt/ssd/code/sd.cpp/build/bin/sd-cli
+    command: path/to/sd.cpp/build/bin/sd-cli
     args:
       - --diffusion-model
-      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_turbo_int8_convrot.safetensors
+      - path/to/models/qwen-image-2.1/qwen_image_2.1_turbo_int8_convrot.safetensors
       - --vae
-      - /mnt/ssd/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
+      - path/to/models/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors
       - --llm
-      - /mnt/ssd/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
+      - path/to/models/qwen-image-2.1/qwen3vl_8b_int8_convrot.safetensors
       - --sigmas
       - qwen-image-2.1-turbo
       - --steps
@@ -199,7 +199,7 @@ backends:
       - -o
       - "{output_pattern}"
     env:
-      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:/mnt/ssd/code/sd.cpp/build/bin
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:path/to/sd.cpp/build/bin
       ROCM_PATH: /opt/rocm
       HIP_PATH: /opt/rocm
     cli_timeout: 600s
