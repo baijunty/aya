@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractUsage, SseUsageStreamParser, mergeUsage } from '../src/proxy/usage.js';
+import { extractUsage, frameHasToken, SseUsageStreamParser, mergeUsage } from '../src/proxy/usage.js';
 
 describe('extractUsage', () => {
   it('非流式 usage + cached_tokens', () => {
@@ -32,5 +32,37 @@ describe('SSE usage 旁路解析', () => {
     p.feed('kens":7}}\n');
     p.flush();
     expect(p.usage?.prompt_tokens).toBe(7);
+  });
+});
+
+describe('frameHasToken（TTFT 首 token 判定）', () => {
+  it('role-only 起始帧与 progress 帧不算 token', () => {
+    expect(frameHasToken({ choices: [{ index: 0, delta: { role: 'assistant' } }] })).toBe(false);
+    expect(frameHasToken({ choices: [{ index: 0, delta: {} }], progress: { phase: 'prefill' } })).toBe(false);
+    expect(frameHasToken({ choices: [], usage: { total_tokens: 3 } })).toBe(false);
+    expect(frameHasToken({ choices: null })).toBe(false);
+  });
+  it('content / reasoning / tool_calls / completions.text 算 token', () => {
+    expect(frameHasToken({ choices: [{ delta: { content: '你' } }] })).toBe(true);
+    expect(frameHasToken({ choices: [{ delta: { content: '' } }] })).toBe(false); // 空串不是 token
+    expect(frameHasToken({ choices: [{ delta: { reasoning_content: 'thinking' } }] })).toBe(true);
+    expect(frameHasToken({ choices: [{ delta: { tool_calls: [{ index: 0 }] } }] })).toBe(true);
+    expect(frameHasToken({ choices: [{ text: 'hi' }] })).toBe(true);
+  });
+  it('gufo 流：跳过响应头后的 role 帧与 : ping 注释，落在首个 content 帧', () => {
+    const seen: number[] = [];
+    let idx = 0;
+    const p = new SseUsageStreamParser((frame) => {
+      if (frameHasToken(frame)) seen.push(idx);
+      idx++;
+    });
+    p.feed(': ping\n\n'); // SSE 注释：不进 onFrame
+    p.feed('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'); // 1 帧，非 token
+    p.feed('data: {"choices":[{"delta":{}}],"progress":{"phase":"prefill","tokens":4096}}\n\n');
+    p.feed('data: {"choices":[{"delta":{"content":"哈"}}]}\n\n'); // 应命中
+    p.feed('data: {"choices":[{"delta":{"content":"喽"}}]}\n\n');
+    p.flush();
+    expect(seen).toEqual([2, 3]); // 第 3、4 帧（role 帧与 progress 帧被跳过）
+    expect(idx).toBe(4);
   });
 });

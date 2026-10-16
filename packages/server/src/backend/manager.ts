@@ -32,6 +32,8 @@ interface BackendEntry {
   drainWaiters: Array<() => void>;
   /** cli 型：进行中的一次性运行数（内存准入引用计数） */
   cliActive: number;
+  /** cli 型：当前批次一次性运行的起始时间；空闲（无运行）时为 undefined */
+  cliStartedAt?: number;
   startTimer?: NodeJS.Timeout;
   restartTimer?: NodeJS.Timeout;
   intentionalStop: boolean;
@@ -69,7 +71,9 @@ export class BackendManager {
         state: 'stopped',
         inflight: 0,
         queued: 0,
-        lastActivityAt: nowMs(),
+        // 0 = 从未活跃：闲置判定/驱逐排序只作用于 ready 态（届时必已被 markReady 刷新），
+        // 看板对 0 显示“—”，避免未用过后端被误报为“服务启动时刻活跃过”
+        lastActivityAt: 0,
         consecutiveHealthFails: 0,
         restartAttempts: 0,
         counters: { starts: 0, stops: 0, crashes: 0, idle_stops: 0 },
@@ -129,7 +133,8 @@ export class BackendManager {
 
     for (;;) {
       // cli 型：一次性进程，无常驻状态机，直接就绪（并发闸门在下方统一生效）
-      if (cfg.type === 'cli') break;
+      // passthrough 型：纯转发远程 API，不托管进程、不探测健康，同样直接就绪
+      if (cfg.type === 'cli' || cfg.type === 'passthrough') break;
       const st = e.rt.state;
       if (st === 'draining') throw AyaErrors.backendDraining(name);
       if (st === 'crashed') throw AyaErrors.backendCrashed(name);
@@ -184,6 +189,7 @@ export class BackendManager {
       }
     }
     e.rt.inflight++;
+    if (first) e.cliStartedAt = nowMs(); // 运行时长只在一次性进程运行期间计时
     let released = false;
     return {
       release: () => {
@@ -191,7 +197,10 @@ export class BackendManager {
         released = true;
         e.rt.inflight--;
         e.rt.lastActivityAt = nowMs();
-        if (--e.cliActive === 0 && admitted) this.deps.resources.release(cfg.name);
+        if (--e.cliActive === 0) {
+          e.cliStartedAt = undefined;
+          if (admitted) this.deps.resources.release(cfg.name);
+        }
         this.wakeDrain(e);
         this.wakeSlot(e);
       },
@@ -260,11 +269,11 @@ export class BackendManager {
   }
 
   // ——— 启动 ———
-  /** 主动启动（经资源准入）。并发调用合并。cli 型无常驻进程，直接返回。 */
+  /** 主动启动（经资源准入）。并发调用合并。cli / passthrough 型无常驻进程，直接返回。 */
   async startBackend(name: string): Promise<void> {
     const e = this.entries.get(name);
     if (!e) throw AyaErrors.backendNotFound(name);
-    if (e.cfg.type === 'cli') return;
+    if (e.cfg.type === 'cli' || e.cfg.type === 'passthrough') return;
     if (e.rt.state === 'ready') return;
     if (e.rt.state === 'starting') {
       return this.waitReady(e, e.cfg.start_timeout_ms);
@@ -450,7 +459,7 @@ export class BackendManager {
   async stopBackend(name: string, reason: StopReason, force = false): Promise<void> {
     const e = this.entries.get(name);
     if (!e) return;
-    if (e.cfg.type === 'cli') return; // 无常驻进程可停
+    if (e.cfg.type === 'cli' || e.cfg.type === 'passthrough') return; // 无常驻进程可停
     if (e.rt.state === 'stopped') return;
     if (e.rt.state === 'ready' || e.rt.state === 'crashed' || e.rt.state === 'starting') {
       this.setState(e, 'stop');
@@ -514,15 +523,28 @@ export class BackendManager {
 
   private statusOf(e: BackendEntry): Record<string, unknown> {
     const now = nowMs();
+    const isCli = e.cfg.type === 'cli';
+    const isPassthrough = e.cfg.type === 'passthrough';
     return {
       name: e.cfg.name,
       type: e.cfg.type,
-      // cli 型无常驻进程：按需 spawn，始终可服务
-      state: e.cfg.type === 'cli' ? 'ready' : e.rt.state,
+      // cli 型无常驻进程：按需 spawn，始终可服务；passthrough 型纯转发远程 API，恒可服务
+      state: isCli || isPassthrough ? 'ready' : e.rt.state,
       inflight: e.rt.inflight,
       queued: e.rt.queued,
-      uptime_ms: e.rt.readyAt ? now - e.rt.readyAt : 0,
-      last_activity_ms: e.rt.lastActivityAt,
+      // 运行时长=进程实际运行时间：process 从 readyAt 起算；cli 仅在一次性进程运行期间，空闲为 null；
+      // passthrough 无进程，恒为 null
+      uptime_ms: isCli
+        ? e.cliStartedAt != null
+          ? now - e.cliStartedAt
+          : null
+        : isPassthrough
+          ? null
+          : e.rt.state === 'ready' && e.rt.readyAt
+            ? now - e.rt.readyAt
+            : null,
+      /** null = 从未活跃过（未跑过任何请求） */
+      last_activity_ms: e.rt.lastActivityAt || null,
       idle_remaining_ms: idleRemainingMs(e.rt, e.cfg, now),
       idle_timeout_ms: e.cfg.idle_timeout_ms,
       counters: e.rt.counters,

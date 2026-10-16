@@ -201,7 +201,8 @@ export function queryRequests(store: StatsStore, f: RequestListFilter): { total:
     .prepare(
       `SELECT request_id, ts_start, ts_end, model, endpoint, backend, key_id, is_stream,
         status_code, ok, error, latency_ms, ttft_ms, prompt_tokens, completion_tokens,
-        total_tokens, cached_tokens, COALESCE(json_extract(timeline,'$.queue'),0) AS queue_ms
+        total_tokens, cached_tokens, COALESCE(json_extract(timeline,'$.queue'),0) AS queue_ms,
+        json_extract(timeline,'$.ttft_source') AS ttft_src
        FROM request_logs WHERE ${whereSql} ORDER BY ts_start DESC LIMIT ? OFFSET ?`,
     )
     .all(...params, f.page_size, offset)
@@ -209,24 +210,29 @@ export function queryRequests(store: StatsStore, f: RequestListFilter): { total:
       const row = r as Record<string, unknown>;
       const out: Record<string, unknown> = { ...row, is_stream: !!row.is_stream, ok: !!row.ok };
       delete out.queue_ms;
+      const ttftSrc = row.ttft_src as string | null | undefined;
+      delete out.ttft_src;
       const pt = row.prompt_tokens as number | null;
       const ct = row.completion_tokens as number | null;
       const cached = row.cached_tokens as number | null;
       const ttft = row.ttft_ms as number | null;
       const lat = row.latency_ms as number | null;
       const queue = (row.queue_ms as number | null) ?? 0;
-      // pp（prefill 速度，tok/s）：流式请求 首包耗时−排队 ≈ prefill 耗时；
-      // 按未命中缓存的 token 计（前缀缓存命中时全量 prompt 会算出天文数字）
+      // pp / tg 只在 TTFT 量到「首个带 token 的帧」时才成立：
+      // 修复前的历史行（ttft_src 为 NULL，量的是响应头/role 帧）一律不给数，避免 10^5 tok/s 的假速度。
+      const ttftIsToken = ttftSrc === 'token';
+      // pp（prefill 速度，tok/s）：流式请求 首 token 耗时−排队 ≈ prefill 耗时；
+      // 按未命中缓存的 token 计（与后端 prefill_tokens 同口径）
       const prefillMs = ttft != null ? ttft - queue : null;
       const uncached = pt != null ? pt - (cached ?? 0) : null;
       out.pp_tokens_s =
-        row.is_stream && uncached != null && uncached > 0 && prefillMs != null && prefillMs > 0
+        row.is_stream && ttftIsToken && uncached != null && uncached > 0 && prefillMs != null && prefillMs > 0
           ? Number((uncached / (prefillMs / 1000)).toFixed(1))
           : null;
-      // tg（解码速度，tok/s）：总时长 − 首包 ≈ 解码耗时（非流式无法拆分，不计算）
+      // tg（解码速度，tok/s）：总时长 − 首 token ≈ 解码耗时（非流式无法拆分，不计算）
       const decodeMs = ttft != null && lat != null ? lat - ttft : null;
       out.tg_tokens_s =
-        row.is_stream && ct && decodeMs != null && decodeMs > 0
+        row.is_stream && ttftIsToken && ct && decodeMs != null && decodeMs > 0
           ? Number((ct / (decodeMs / 1000)).toFixed(1))
           : null;
       return out;

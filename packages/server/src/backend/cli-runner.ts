@@ -105,6 +105,7 @@ export async function runCli(
       args.push(raw[i]!);
     }
     const log = backendLogStream(logDir, cfg.name);
+    log.startRun(); // logs.mode=run 时每次 spawn（即每请求）清空，只留最近一次
     logger.info({ backend: cfg.name, command: cfg.command, args }, 'spawning cli backend');
     const proc = spawn(cfg.command!, args, {
       cwd: cfg.cwd,

@@ -127,3 +127,20 @@ input[type="file"]::file-selector-button:hover { border-color: var(--accent); }
 /* —— 顶栏用户区 —— */
 .user-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; margin-left: 8px; }
 .logout-btn { padding: 3px 10px; font-size: 12px; }
+
+/* —— 自动刷新 —— */
+.refresh-ctl {
+  display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--border);
+  color: var(--muted); font-size: 13px;
+}
+.refresh-ctl .btn { padding: 4px 9px; font-size: 12px; }
+.btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.refresh-meta { font-size: 12px; white-space: nowrap; margin-left: 2px; }
+.panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.panel-head h3 { margin: 0; }
+.refresh-hint { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); display: inline-block; }
+.dot.busy { background: var(--yellow); animation: pulse 0.9s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.2; } }
+.warn { color: var(--yellow); }

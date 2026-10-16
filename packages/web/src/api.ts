@@ -79,8 +79,8 @@ export interface BackendStatus {
   state: string;
   inflight: number;
   queued: number;
-  uptime_ms: number;
-  last_activity_ms: number;
+  uptime_ms: number | null;
+  last_activity_ms: number | null;
   idle_remaining_ms: number | null;
   idle_timeout_ms: number;
   counters: { starts: number; stops: number; crashes: number; idle_stops: number };
@@ -104,9 +104,9 @@ export interface RequestRow {
   completion_tokens: number | null;
   total_tokens: number | null;
   cached_tokens: number | null;
-  /** prefill 速度 tok/s（流式请求，ttft−排队 估算） */
+  /** prefill 速度 tok/s（流式；(prompt−cached)/(ttft−排队)，与后端 prefill_tps 同口径；TTFT 未量到 token 帧时为空） */
   pp_tokens_s: number | null;
-  /** 解码速度 tok/s（流式请求，latency−ttft 估算） */
+  /** 解码速度 tok/s（流式；completion/(latency−ttft)；TTFT 未量到 token 帧时为空） */
   tg_tokens_s: number | null;
 }
 

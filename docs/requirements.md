@@ -38,7 +38,7 @@
 | 模型（Model） | 对外暴露的模型名，映射到某个后端 |
 | 工作状态 | 后端正在处理请求、正在加载模型、正在启动/预热等占用资源的状态 |
 | 闲置（Idle） | 该模型无任何调用（无进行中请求、无排队请求），且后端不处于工作状态 |
-| TTFT | Time To First Token，从网关收到请求到向客户端发出第一个响应字节（流式为第一个 token 块）的时间 |
+| TTFT | Time To First Token，从网关开始转发到拿到**第一个生成出来的 token**（流式：首个带 `content`/`reasoning_content`/`tool_calls` 的 SSE 帧；非流式：响应体首字节）的时间。响应头、`delta:{role}` 起始帧与 `: ping` 注释心跳**都不算**，它们只代表「流已打开」，另记 `timeline.first_byte` |
 | 缓存命中 | 后端 usage 中报告的 prompt cache / KV cache 命中 token 数（如 `usage.prompt_tokens_details.cached_tokens`） |
 
 ---
@@ -79,9 +79,10 @@
 | 字段 | 说明 |
 |---|---|
 | `name` | 后端唯一名 |
-| `type` | `process`（托管进程）、`remote`（远程 HTTP 服务）或 `cli`（一次性命令行工具，每请求 spawn 生成文件后退出，如 llama-tts） |
+| `type` | `process`（托管进程）、`remote`（远程 HTTP 服务）、`cli`（一次性命令行工具，每请求 spawn 生成文件后退出，如 llama-tts）或 `passthrough`（纯转发远程 OpenAI 兼容 API：不托管进程、不探测健康，恒可服务，上游不可达快速失败） |
 | `command` / `args` / `env` / `cwd` | process 型：启动命令、参数、环境变量、工作目录 |
-| `base_url` | remote 型 / process 型：后端 HTTP 地址（process 型启动后用于健康检查与转发） |
+| `base_url` | remote 型 / process 型 / passthrough 型：后端 HTTP 地址（process 型启动后用于健康检查与转发；passthrough 型为纯转发目标） |
+| `api_key` | 上游 API Key（remote/passthrough）：注入 `Authorization: Bearer <key>`，独立于网关自身 `api_keys`；`auth` 显式头优先；两者都缺省则原样透传客户端 Authorization（上游 key 同自身设置） |
 | `health_check` | 健康检查 URL、间隔、成功判定（状态码/JSON 字段） |
 | `start_timeout` | 启动→就绪的超时（大模型加载可能数分钟） |
 | `stop_grace_period` | 优雅停止等待时长，超时后强杀 |
@@ -133,7 +134,7 @@
 | 请求 | 客户端地址、API Key 标识（脱敏，仅 key id）、端点类型（chat/image/asr/tts/...）、模型名、是否流式、请求参数摘要（如 `max_tokens`、`temperature`、图片尺寸/数量、音频时长等，不记录正文内容） |
 | 后端 | 后端名、后端耗时（转发发出→应答完成）、后端状态码 |
 | 结果 | 网关状态码、成功/失败、错误信息、总延迟（收到请求→应答完成） |
-| 性能 | **TTFT 首 token 时间**（流式：首个透传块；非流式：响应头发出时间） |
+| 性能 | **TTFT 首 token 时间**（流式：首个携带 token 的透传帧；非流式：响应体首字节。上游的响应头、role-only 起始帧与 SSE 心跳注释不计入，`timeline.first_byte` 单独记录） |
 | Token | `prompt_tokens`、`completion_tokens`、`total_tokens`、**`cached_tokens`（缓存命中数）** |
 | 流量 | 请求/响应字节数 |
 
@@ -165,7 +166,7 @@
 2. **趋势图表**：请求量趋势、延迟趋势（avg/P95 双线）、token 用量堆叠图（prompt vs completion）、按模型占比（饼图/条形图）；
 3. **请求明细**：表格分页展示 request log，支持按时间范围、模型、端点类型、状态（成功/失败）、是否流式过滤；点击行**下钻单请求详情**（全部字段、时间线：到达→排队→后端启动→后端首包→完成）；
 4. **后端状态页**：各后端当前状态（stopped/starting/ready/crashed）、运行时长、最近活跃时间、**闲置倒计时**、累计启动/停止/崩溃次数；提供手动 启动/停止/重启 与模型 **加载/卸载** 按钮（P1）；展示**设备内存面板**（内存总量与可用、各后端声明需求与占用、进行中的加载任务与驱逐等待状态）；
-5. 自动刷新（如 10s）与时间范围选择全局联动。
+5. 自动刷新（默认 10s，顶栏可切 5s/10s/30s/60s/关并手动刷新，后台标签页暂停、回前台立即补刷）与时间范围选择全局联动；刷新状态在页面上可见（档位、下次倒计时、上次刷新时刻、刷新中提示）。
 
 要求：无需登录即可本地查看（与 API 鉴权策略一致，可配置）；移动端不做要求，桌面浏览器优先。
 

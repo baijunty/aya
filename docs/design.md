@@ -93,7 +93,7 @@ aya/
 
 ```ts
 // —— 配置 ——
-type BackendType = 'process' | 'remote' | 'cli';
+type BackendType = 'process' | 'remote' | 'cli' | 'passthrough';
 interface BackendConfig {
   name: string;
   type: BackendType;
@@ -112,7 +112,8 @@ interface BackendConfig {
   queue_size: number;
   queue_timeout_ms: number;
   restart?: { max_retries: number; backoff_base_ms: number };
-  auth?: { header: string; value: string };  // remote 上游鉴权注入
+  auth?: { header: string; value: string };  // remote/passthrough 上游鉴权注入（显式头，优先级最高）
+  api_key?: string;   // 上游 API Key：注入 Authorization: Bearer；auth 缺省时生效；两者都缺省则透传客户端 Authorization
   required_memory?: { mem_mb: number };  // 加载所需内存峰值（统一内存，准入检查用）
   priority?: number;            // 驱逐优先级，越大越不易被驱逐（默认 0）
   evictable?: boolean;          // 是否可作为腾挪牺牲者（默认 true，false=常驻）
@@ -208,7 +209,7 @@ interface RequestLog {
 
 - `spawn(command, args, { detached: true, cwd, env })` → 子进程成为**新进程组组长**，`pgid = child.pid`。
 - 参数插值：`args` 中 `{model_path}`、`{port}` 等占位符由配置解析填充。
-- stdout/stderr 通过 `pino` 转写进「按后端归档」的日志文件（`data/logs/<backend>.log`），轮转。
+- stdout/stderr 归档到「按后端」的日志文件（`data/logs/<backend>.log`），增长策略由 `logs` 配置控制，默认按天切：跨天把旧文件另存为 `<backend>-YYYY-MM-DD.log` 并另起当天文件，超过 `keep_days` 的历史文件自动删除；`mode: run` 则每次拉起后端清空只留本次运行；任何模式下超过 `max_bytes` 都就地截断保留最新内容。归档写入失败只告警，不影响转发。
 - 监听 `exit`：区分「主动 stop 触发的退出」与「意外退出」。意外退出 → `crashed`，记录事件，若 `restart.max_retries` 未用尽则按 `backoff_base_ms * 2^attempt` 退避重启，否则回到 `stopped`（下次按需拉起）。
 
 ### 4.3 停止（优雅卸载）
@@ -357,7 +358,7 @@ HTTP 请求
   │ 3. 解析 model（JSON body 或 multipart 的 model 字段）→ 路由到 backend；kind 与 endpoint 校验
   │ 4. acquire(backend) 租约（可能触发冷启动，请求在此等待就绪）
   │ 5. undici.request 转发（透传 body 流 + 白名单请求头 + 注入上游鉴权）
-  │ 6. 回传：按响应类型分流（见 5.2），记录 ttft（首字节/首块）
+  │ 6. 回传：按响应类型分流（见 5.2），记录 ttft（首个携带 token 的帧；首字节另记 timeline.first_byte）
   │ 7. 结束：release 租约；组装 RequestLog 投递到异步 writer
 ```
 
@@ -369,7 +370,7 @@ HTTP 请求
 
 | 响应类型 | 判定 | 处理 |
 |---|---|---|
-| SSE 流式（chat/completion） | `Content-Type: text/event-stream` 或请求 `stream:true` | 逐 chunk `reply.raw.write` 透传，**不缓冲**；旁路解析 `data:` 行提取 usage 与统计 token（见 5.3）；首块记 TTFT |
+| SSE 流式（chat/completion） | `Content-Type: text/event-stream` 或请求 `stream:true` | 逐 chunk `reply.raw.write` 透传，**不缓冲**；旁路解析 `data:` 行提取 usage 与统计 token（见 5.3）；**首个携带 token 的帧**记 TTFT（`delta:{role}` 起始帧与 `: ping` 心跳不计数） |
 | 二进制流（TTS） | `audio/*` | 直接 pipe，边收边发，累计 `resp_bytes` |
 | 普通 JSON | 其余 | 透传 body；解析 `usage` 提取 token/cached_tokens |
 | 错误 | 上游 4xx/5xx | 原样透传状态码与 body |
@@ -483,7 +484,7 @@ Client        Gateway                    BackendManager        llama.cpp(未运�
   │           │  (请求在租约处等待就绪)   │ health OK → ready
   │           │◀─────────────────────────┤ lease
   │           │ undici 转发 body 流 ─────────────────────────────▶ 推理
-  │◀─ SSE chunk ─┤◀── 逐块透传 ────────────────────────────────────┤  (记 TTFT=首块)
+  │◀─ SSE chunk ─┤◀── 逐块透传 ────────────────────────────────────┤  (记 TTFT=首个 token 帧)
   │◀─ SSE chunk ─┤  旁路解析 usage
   │◀─ [DONE] ───┤ 流结束: 解析 usage → 组装 RequestLog → 异步落库
   │           │ release: inflight--, lastActivity=now

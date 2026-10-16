@@ -119,6 +119,24 @@ describe('Aya gateway (remote mock backend)', () => {
     expect(text).toContain('"cached_tokens":6');
   });
 
+  it('chat 流式：TTFT 落在首个带 token 的帧，不是响应头/role 帧', async () => {
+    // mock 后端每 20ms 一帧：第 1 帧只有 role。按首字节计时会让 TTFT≈首包，
+    // 于是 pp（prefill 速度）虚高一个数量级——这里锁死测量点。
+    const res = await post('/v1/chat/completions', {
+      model: 'mock-chat',
+      stream: true,
+      messages: [{ role: 'user', content: 'hi' }],
+    });
+    const id = res.headers.get('x-aya-request-id')!;
+    await res.text();
+    await new Promise((r) => setTimeout(r, 600));
+    const d = await (await fetch(`${base}/api/v1/stats/requests/${id}`)).json();
+    expect(d.is_stream).toBe(true);
+    expect(d.timeline_ms.ttft_source).toBe('token');
+    expect(d.timeline_ms.first_byte).toBeTypeOf('number');
+    expect(d.ttft_ms - d.timeline_ms.first_byte).toBeGreaterThanOrEqual(10);
+  });
+
   it('别名路由：gpt-4o-mini → mock-chat', async () => {
     const res = await post('/v1/chat/completions', { model: 'gpt-4o-mini', messages: [] });
     expect(res.status).toBe(200);
@@ -175,6 +193,18 @@ describe('Aya gateway (remote mock backend)', () => {
     expect(res.status).toBe(400);
     const j = await res.json();
     expect(j.error.code).toBe('missing_model');
+  });
+
+  it('请求体 > PEEK_MAX(256KB)：model 在头部也必须路由成功（回归：前缀截断曾致 400 missing_model）', async () => {
+    // 300KB 请求体：peek 前缀（256KB）装不下整个 JSON，整体 parse 必失败；
+    // 旧实现依赖整体 parse，成败取决于 TCP 分块边界。修复后由前缀扫描兜底。
+    const res = await post('/v1/chat/completions', {
+      model: 'mock-chat',
+      messages: [{ role: 'user', content: 'x'.repeat(300 * 1024) }],
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.choices[0].message.content).toBe('你好世界');
   });
 
   it('未知模型 → 404 model_not_found', async () => {

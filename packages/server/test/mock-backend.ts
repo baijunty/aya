@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import { AddressInfo } from 'node:net';
 
 /**
@@ -56,6 +57,18 @@ export async function startMockBackend(): Promise<MockBackend> {
         return;
       }
       if (url.pathname === '/v1/chat/completions') {
+        if (json.model === 'mock-auth') {
+          // 回显上游收到的 Authorization 头：断言网关的 api_key 注入 / 客户端 Authorization 透传
+          res.writeHead(200, { 'content-type': 'application/json' }).end(
+            JSON.stringify({
+              id: 'cmpl-auth', object: 'chat.completion',
+              choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+              auth: req.headers['authorization'] ?? null,
+            }),
+          );
+          return;
+        }
         if (json.model === 'mock-framing') {
           // 回显上游收到的请求体定界方式：用于断言网关没有把请求退化成 chunked
           res.writeHead(200, { 'content-type': 'application/json' }).end(
@@ -108,6 +121,8 @@ export async function startMockBackend(): Promise<MockBackend> {
             id: 'cmpl-1', object: 'chat.completion',
             choices: [{ index: 0, message: { role: 'assistant', content: '你好世界' }, finish_reason: 'stop' }],
             usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_tokens_details: { cached_tokens: 6 } },
+            // 回显上游收到的 Authorization（passthrough 鉴权断言用；其余测试忽略该字段）
+            auth: req.headers['authorization'] ?? null,
           }),
         );
         return;
@@ -163,4 +178,51 @@ export async function startMockBackend(): Promise<MockBackend> {
     requestCount: () => count,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   };
+}
+
+export interface MockProxy {
+  url: string;
+  hits(): number;
+  close(): Promise<void>;
+}
+
+/**
+ * 极简 HTTP 代理（backend.proxy 断言用）：undici ProxyAgent 对一切上游都发 CONNECT 建隧道
+ * （https 亦然），故这里实现 CONNECT 隧道转发，hits() 计隧道数——>0 即证明流量真的走了代理。
+ */
+export async function startMockProxy(): Promise<MockProxy> {
+  let hits = 0;
+  const server = http.createServer((req, res) => {
+    // 非 CONNECT 的 absolute-form 请求（curl 等客户端会这样发）：本测试用不到，明确拒绝
+    req.resume();
+    req.on('end', () => res.writeHead(502, { 'content-type': 'text/plain' }).end('mock proxy: CONNECT only'));
+  });
+  server.on('connect', (req, socket, head) => {
+    hits++;
+    const [host, port] = String(req.url ?? '').split(':');
+    const upstream = net.connect(Number(port), host ?? '127.0.0.1', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head?.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as AddressInfo).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    hits: () => hits,
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
+/** 取一个「刚关闭」的端口：连它必然 ECONNREFUSED（死代理断言用） */
+export async function closedPort(): Promise<number> {
+  const srv = http.createServer();
+  await new Promise<void>((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => srv.close(() => resolve()));
+  return port;
 }

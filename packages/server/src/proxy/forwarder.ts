@@ -1,6 +1,6 @@
 import { Transform, Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { request as undiciRequest } from 'undici';
+import { request as undiciRequest, ProxyAgent, type Dispatcher } from 'undici';
 import Busboy from 'busboy';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import {
@@ -8,7 +8,9 @@ import {
   AyaErrors,
   SseUsageStreamParser,
   extractUsage,
+  frameHasToken,
   newRequestId,
+  upstreamAuthOverrides,
   type BackendConfig,
   type ModelConfig,
   type ProxyConfig,
@@ -66,7 +68,9 @@ export async function forward(
   let lease: Lease | undefined;
   let queueMs = 0;
   let usage: Usage | undefined;
-  let ttftMs: number | undefined;
+  /** 首个「含 token 的帧」与「响应体首字节」，都以 tsStart 为基准；前者才是 TTFT */
+  let firstTokenMs: number | undefined;
+  let firstByteMs: number | undefined;
   let statusCode = 500;
   let errorMsg: string | undefined;
   let isStream = false;
@@ -86,6 +90,8 @@ export async function forward(
   const finish = (code: number, err?: string): void => {
     const tsEnd = Date.now();
     const failed = !(code >= 200 && code < 400);
+    // 认不出 token 帧的上游退回首字节计时，并在 timeline.ttft_source 标明，避免下游误读
+    const ttftMs = firstTokenMs ?? firstByteMs;
     const log: RequestLog = {
       request_id: requestId,
       ts_start: tsStart,
@@ -112,7 +118,14 @@ export async function forward(
       req_summary: reqSummary,
       req_raw: failed && reqRaw ? reqRaw.slice(0, rawCfg || undefined) : undefined,
       resp_raw: failed && respRaw ? respRaw : undefined,
-      timeline: { queue: queueMs, backend_start: 0, backend_ttfb: backendTtfb, total: tsEnd - tsStart },
+      timeline: {
+        queue: queueMs,
+        backend_start: 0,
+        backend_ttfb: backendTtfb,
+        first_byte: firstByteMs ?? 0,
+        ttft_source: ttftMs === undefined ? undefined : firstTokenMs !== undefined ? 'token' : 'first_byte',
+        total: tsEnd - tsStart,
+      },
     };
     stats.enqueue(log);
   };
@@ -147,7 +160,8 @@ export async function forward(
       headers['content-length'] = clientLen;
       reqBytes = Number(clientLen) || 0;
     }
-    if (backend.auth) headers[backend.auth.header] = backend.auth.value;
+    // 上游鉴权：auth 显式头 > api_key（Bearer）> 原样透传客户端 Authorization
+    Object.assign(headers, upstreamAuthOverrides(backend));
 
     const abort = new AbortController();
     const tBackend0 = Date.now();
@@ -160,10 +174,15 @@ export async function forward(
         signal: abort.signal,
         headersTimeout: Math.min(backend.start_timeout_ms, 300_000),
         bodyTimeout: ctx.proxyCfg.idle_response_timeout_ms,
+        dispatcher: proxyDispatcher(backend.proxy),
       });
     } catch (e) {
       backendMs = Date.now() - tBackend0;
       const msg = (e as Error).message;
+      // passthrough 无「启动」概念：连不上就是上游不可达
+      if (backend.type === 'passthrough') {
+        throw AyaErrors.upstreamUnreachable(backend.name, msg);
+      }
       if (msg.includes('connect') || msg.includes('ECONNREFUSED') || msg.includes('socket hang up')) {
         throw AyaErrors.backendStartFailed(backend.name, `upstream unreachable: ${msg}`);
       }
@@ -188,14 +207,18 @@ export async function forward(
     backendTtfb = Date.now() - tBackend0;
 
     // 4. 旁路观察：usage / TTFT / 字节计数，不改写字节流
-    const sseParser = new SseUsageStreamParser();
+    // TTFT 必须落在首个「带 token 的帧」上：上游（gufo/llama.cpp 系）会先 flush 响应头 +
+    // role-only 起始帧，空闲期还有 `: ping` 注释心跳，按首字节计时会把 prefill 算成 ~0。
+    const sseParser = new SseUsageStreamParser((frame) => {
+      if (firstTokenMs === undefined && frameHasToken(frame)) firstTokenMs = Date.now() - tsStart;
+    });
     let jsonBuf = '';
     let firstByte = true;
     const isErrResp = statusCode >= 400;
     const observer = new Transform({
       transform(chunk: Buffer, _enc, cb) {
         if (firstByte) {
-          ttftMs = Date.now() - tsStart;
+          firstByteMs = Date.now() - tsStart;
           firstByte = false;
         }
         respBytes += chunk.length;
@@ -297,6 +320,21 @@ function upstreamErrorBrief(body: string, status: number): string {
     return `upstream_error: ${body.slice(0, 300)}`;
   }
   return `upstream_error: http ${status}`;
+}
+
+/**
+ * 后端 proxy 配置 → undici ProxyAgent（按代理 URL 缓存复用连接池）。
+ * https 上游经 CONNECT 隧道；热加载换代理 URL 时自然新建，旧实例随池空闲回收。
+ */
+const proxyAgents = new Map<string, ProxyAgent>();
+export function proxyDispatcher(proxy?: string): Dispatcher | undefined {
+  if (!proxy) return undefined;
+  let agent = proxyAgents.get(proxy);
+  if (!agent) {
+    agent = new ProxyAgent(proxy);
+    proxyAgents.set(proxy, agent);
+  }
+  return agent;
 }
 
 /** base_url 已含 /v1 前缀；originalUrl 去掉 /v1 避免重复 */

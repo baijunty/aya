@@ -18,6 +18,13 @@ storage:
   path: ./data/aya.db
   retention_days: 90
 
+logs:                     # 后端 stdout/stderr 归档（<data_dir>/logs/<backend>.log）的增长控制
+  mode: day               # day=按天切（默认）：跨天把旧文件另存为 <backend>-YYYY-MM-DD.log 另起当天文件
+                          # run=每次拉起后端清空，只留本次运行（cli 后端每请求 spawn，即只留最近一次请求）
+                          # append=单文件一直追加（旧行为，只靠 max_bytes 兜底）
+  keep_days: 3            # day 模式保留几天的历史文件，超期自动删除；0 = 只留当天
+  max_bytes: 20mb         # 单文件上限，超限即截断保留最新内容（旧内容丢弃）；0 = 不限
+
 resources:                # 资源感知加载（防 OOM；统一内存主机只看系统内存）
   enabled: true
   probe_interval: 5s
@@ -86,6 +93,26 @@ backends:
     type: remote
     base_url: "http://192.168.1.20:5000/v1"
     auth: { header: Authorization, value: "Bearer sk-xxx" }  # 上游鉴权注入（可选）
+
+  # 纯转发型：远程 OpenAI 兼容 API（如 http://127.0.0.1:8731/v1）。
+  # 与 remote 的区别：不托管进程、不做健康探测，恒可服务，上游不可达时快速失败（502 upstream_unreachable）。
+  # 上游 api key 三种配法（优先级从高到低）：
+  #   1) auth: { header: Authorization, value: "Bearer sk-xxx" }   显式头
+  #   2) api_key: "sk-xxx"                                          注入 Bearer（独立于网关自身 api_keys，可不同）
+  #   3) 都不配                                                     原样透传客户端的 Authorization（上游 key 同自身设置）
+  - name: openai-upstream
+    type: passthrough
+    base_url: "http://127.0.0.1:8731/v1"
+    api_key: "sk-upstream-xxx"     # 删掉本行即「上游 key 同自身设置」：客户端带什么上游收什么
+    max_concurrency: 32            # 纯转发并发闸门（默认 8，按需放宽）
+
+  # 境外 API 经 HTTP 代理出网：proxy 配置后转发（及 remote 健康检查）都经该代理连接上游，
+  # https 上游走 CONNECT 隧道；缺省直连。
+  - name: venice-upstream
+    type: passthrough
+    base_url: "https://api.venice.ai/api/v1"
+    api_key: "ven_xxx"
+    proxy: "http://127.0.0.1:8389"
 
   # CLI 型：一次性命令行工具，每请求 spawn 进程生成文件后退出（无 HTTP 上游）。
   # args 占位符：{input_file} = 请求 input 文本落盘路径，{output_file} = 期望产出路径，
@@ -229,3 +256,6 @@ models:
   - name: qwen-image-turbo      # 8 步蒸馏加速（generations 与 edits 通用）
     backend: qwen-image-sdcpp-turbo
     kind: image
+  - name: gpt-4o                # 纯转发上游：客户端 model=gpt-4o → 上游收到同名 model
+    backend: openai-upstream
+    kind: chat

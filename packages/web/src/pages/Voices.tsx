@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { api, type Voice } from '../api';
-import { usePoll } from '../App';
+import { usePoll } from '../refresh';
 
 function fmtBytes(n?: number): string {
   if (!n) return '—';

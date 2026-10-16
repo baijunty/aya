@@ -1,5 +1,6 @@
 export * from './model/types.js';
 export * from './util/time.js';
+export * from './util/bytes.js';
 export * from './util/id.js';
 export * from './util/errors.js';
 export * from './config/schema.js';
@@ -9,3 +10,4 @@ export * from './backend/stateMachine.js';
 export * from './backend/idle.js';
 export * from './resource/admission.js';
 export * from './proxy/usage.js';
+export * from './proxy/auth.js';

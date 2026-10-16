@@ -26,6 +26,33 @@ export function extractUsage(obj: unknown): Usage | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+/**
+ * 该 SSE 帧是否携带「真正生成出来的 token」——用来把「流打开」与「首 token」分开。
+ * 以下帧都不是 token，必须跳过：
+ * - SSE 注释（`: ping` 心跳，压根不是 data: 帧，解析阶段就被丢掉）；
+ * - 起始 role 帧 `delta:{role:"assistant"}`（content 为空）；
+ * - progress 帧（delta 为空对象，gufo 在 prefill 期间持续发）。
+ * 否则 TTFT 会落在响应头/role 帧上（约 30ms），prefill 全被算成 0，pp 虚高 1~2 个数量级。
+ */
+export function frameHasToken(obj: unknown): boolean {
+  const choices = (obj as { choices?: unknown } | null)?.choices;
+  if (!Array.isArray(choices)) return false;
+  for (const c of choices) {
+    if (!c || typeof c !== 'object') continue;
+    const o = c as Record<string, unknown>;
+    // /v1/completions 方言：choices[].text
+    if (typeof o.text === 'string' && o.text.length > 0) return true;
+    const delta = o.delta;
+    if (!delta || typeof delta !== 'object') continue;
+    const d = delta as Record<string, unknown>;
+    for (const k of ['content', 'reasoning_content', 'reasoning', 'thinking']) {
+      if (typeof d[k] === 'string' && (d[k] as string).length > 0) return true;
+    }
+    if (Array.isArray(d.tool_calls) && d.tool_calls.length > 0) return true;
+  }
+  return false;
+}
+
 /** 合并 usage：后到的非空字段覆盖（流式末尾 usage chunk 语义） */
 export function mergeUsage(base: Usage | undefined, extra: Usage | undefined): Usage | undefined {
   if (!base) return extra;
@@ -40,6 +67,9 @@ export function mergeUsage(base: Usage | undefined, extra: Usage | undefined): U
 export class SseUsageCollector {
   private usage: Usage | undefined;
 
+  /** onFrame：每个成功解析的 JSON data 帧都会回调一次（先于 usage 合并），供 TTFT 首 token 判定用 */
+  constructor(private readonly onFrame?: (obj: unknown) => void) {}
+
   feedLine(line: string): void {
     const trimmed = line.trim();
     if (!trimmed.startsWith('data:')) return;
@@ -47,6 +77,7 @@ export class SseUsageCollector {
     if (!payload || payload === '[DONE]') return;
     try {
       const obj = JSON.parse(payload);
+      this.onFrame?.(obj);
       const u = extractUsage(obj);
       if (u) this.usage = mergeUsage(this.usage, u);
     } catch {
@@ -62,7 +93,11 @@ export class SseUsageCollector {
 /** 按 chunk 边界喂入（处理跨 chunk 的行切分） */
 export class SseUsageStreamParser {
   private buf = '';
-  private collector = new SseUsageCollector();
+  private collector: SseUsageCollector;
+
+  constructor(onFrame?: (obj: unknown) => void) {
+    this.collector = new SseUsageCollector(onFrame);
+  }
 
   feed(chunk: string): void {
     this.buf += chunk;

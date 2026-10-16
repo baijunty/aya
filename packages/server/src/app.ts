@@ -9,7 +9,7 @@ import {
   ModelRouter,
   type AppConfig,
 } from '@aya/core';
-import { logger } from './log.js';
+import { logger, configureBackendLogs, type BackendLogConfig } from './log.js';
 import { BackendManager } from './backend/manager.js';
 import { ResourceManager } from './resource/manager.js';
 import { LoadOps } from './resource/load-ops.js';
@@ -43,6 +43,13 @@ export function createApp(configPath: string): AyaApp {
   const voices = new VoiceStore(store.db, path.join(path.dirname(cfg.storage.path), 'voices'));
 
   const logDir = path.join(path.dirname(cfg.storage.path), 'logs');
+  const backendLogCfg = (l: AppConfig['logs']): BackendLogConfig => ({
+    mode: l.mode,
+    keepDays: l.keep_days,
+    maxBytes: l.max_bytes,
+  });
+  // 归档策略下发 + 清理超期的历史日志（logs.keep_days）
+  configureBackendLogs(backendLogCfg(cfg.logs), logDir);
   let managerRef!: BackendManager;
   const resources: ResourceManager = new ResourceManager(
     {
@@ -123,6 +130,7 @@ export function createApp(configPath: string): AyaApp {
     for (const name of prevNames) {
       if (!nextNames.has(name)) void manager.removeBackend(name);
     }
+    configureBackendLogs(backendLogCfg(next.logs), logDir);
     logger.info({ backends: next.backends.length, models: next.models.length }, 'config reloaded');
   }
 

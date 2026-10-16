@@ -40,6 +40,7 @@ export class ProcessRunner {
     if (this.proc) throw new Error(`runner already started: ${this.cfg.name}`);
     const args = this.interpolateArgs();
     const log = backendLogStream(this.logDir, this.cfg.name);
+    log.startRun(); // logs.mode=run 时清空，只留本次运行；day 模式顺带跨天切换
     logger.info({ backend: this.cfg.name, command: this.cfg.command, args }, 'spawning backend process');
     this.stopping = false;
     this.exited = false;

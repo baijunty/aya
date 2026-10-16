@@ -27,7 +27,7 @@ export class LoadOps {
     const backend = this.manager.getConfig(model.backend);
     if (!backend) throw AyaErrors.backendNotFound(model.backend);
 
-    if (backend.type === 'remote' || backend.type === 'cli') {
+    if (backend.type === 'remote' || backend.type === 'cli' || backend.type === 'passthrough') {
       return { status: 200, body: { model: model.name, backend: backend.name, status: 'noop' } };
     }
 
@@ -83,7 +83,7 @@ export class LoadOps {
     const backend = this.manager.getConfig(model.backend);
     if (!backend) throw AyaErrors.backendNotFound(model.backend);
 
-    if (backend.type === 'remote' || backend.type === 'cli') {
+    if (backend.type === 'remote' || backend.type === 'cli' || backend.type === 'passthrough') {
       return { status: 200, body: { model: model.name, backend: backend.name, status: 'noop' } };
     }
     if (this.resources.activeLoadOps().some((o) => o.backend === backend.name)) {

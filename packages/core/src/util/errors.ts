@@ -54,6 +54,9 @@ export const AyaErrors = {
   backendStartFailed: (backend: string, detail?: string) =>
     new AyaError(502, 'bad_gateway', 'backend_start_failed',
       `backend "${backend}" failed to start${detail ? `: ${detail}` : ''}`),
+  upstreamUnreachable: (backend: string, detail?: string) =>
+    new AyaError(502, 'bad_gateway', 'upstream_unreachable',
+      `upstream "${backend}" unreachable${detail ? `: ${detail}` : ''}`),
   cliFailed: (backend: string, detail?: string) =>
     new AyaError(502, 'bad_gateway', 'cli_failed',
       `cli backend "${backend}" failed${detail ? `: ${detail}` : ''}`),

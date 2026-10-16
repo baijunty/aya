@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type RequestRow } from '../api';
-import { usePoll, useRange } from '../App';
+import { useRange } from '../App';
+import { usePoll } from '../refresh';
+import { RefreshHint } from '../components/RefreshControl';
 
 function fmtTime(ms: number): string {
   return new Date(ms).toLocaleString('zh-CN', { hour12: false });
@@ -41,7 +43,10 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <h3>请求详情 {id}</h3>
         {tl && (
-          <div className="timeline" title={`排队 ${queue}ms / 首包 ${ttfb}ms / 传输 ${stream}ms`}>
+          <div
+            className="timeline"
+            title={`排队 ${queue}ms / 响应头 ${ttfb}ms / 首字节 ${tl.first_byte ?? 0}ms / 传输 ${stream}ms（TTFT 来源：${tl.ttft_source ?? '未知'}）`}
+          >
             <div className="tl-queue" style={{ width: `${(queue / total) * 100}%` }} />
             <div className="tl-ttfb" style={{ width: `${(ttfb / total) * 100}%` }} />
             <div className="tl-stream" style={{ width: `${(stream / total) * 100}%` }} />
@@ -81,13 +86,31 @@ export function Requests() {
   const [endpoint, setEndpoint] = useState('');
   const [status, setStatus] = useState('');
   const [detail, setDetail] = useState<string>();
-  const { data } = usePoll(
+  const { data, refreshing, updatedAt } = usePoll(
     () => api.requests(from, to, page, { model, endpoint, status }),
     [from, to, page, model, endpoint, status],
   );
 
+  // 定时刷新带进来的新增条数：只在第一页提示，翻页时不去打扰正在看历史的用户
+  const prevTotal = useRef<number | undefined>(undefined);
+  const newCount = data && prevTotal.current != null && page === 1 ? Math.max(0, data.total - prevTotal.current) : 0;
+  useEffect(() => {
+    prevTotal.current = data?.total;
+  }, [data?.total]);
+
   return (
     <div className="panel">
+      <div className="panel-head">
+        <h3>
+          请求明细{' '}
+          {newCount > 0 && (
+            <span className="tag ok" title="本次定时刷新新增">
+              +{newCount} 条新请求
+            </span>
+          )}
+        </h3>
+        <RefreshHint refreshing={refreshing} updatedAt={updatedAt} />
+      </div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <input type="text" placeholder="模型过滤" value={model} onChange={(e) => { setModel(e.target.value); setPage(1); }} />
         <select value={endpoint} onChange={(e) => { setEndpoint(e.target.value); setPage(1); }}>

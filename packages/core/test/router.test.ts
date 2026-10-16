@@ -59,6 +59,20 @@ models: []
   it('process 型缺 command 报错', () => {
     expect(() => parseConfigText('backends:\n  - { name: b, type: process }\n')).toThrow(/command/);
   });
+  it('proxy 字段：http(s) 接受，非 http(s) 协议拒绝，cli 型拒绝', () => {
+    const cfg = parseConfigText(`
+backends:
+  - { name: b, type: passthrough, base_url: "https://api.example.com/v1", proxy: "http://127.0.0.1:8389" }
+models: []
+`);
+    expect(cfg.backends[0]!.proxy).toBe('http://127.0.0.1:8389');
+    expect(() =>
+      parseConfigText('backends:\n  - { name: b, type: passthrough, base_url: "https://x/v1", proxy: "socks5://127.0.0.1:1080" }\n'),
+    ).toThrow(/proxy/);
+    expect(() =>
+      parseConfigText('backends:\n  - { name: b, type: cli, command: /bin/x, proxy: "http://127.0.0.1:8389" }\n'),
+    ).toThrow(/proxy/);
+  });
 });
 
 describe('ModelRouter', () => {

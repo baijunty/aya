@@ -2,9 +2,10 @@
 
 /**
  * process = 常驻 HTTP 服务（网关托管进程）；remote = 已运行的远程服务；
- * cli = 一次性命令行工具（每请求 spawn，产出文件后退出，如 llama-tts 生成 wav）。
+ * cli = 一次性命令行工具（每请求 spawn，产出文件后退出，如 llama-tts 生成 wav）；
+ * passthrough = 纯转发上游（远程 OpenAI 兼容 API）：不托管进程、不做健康探测，恒可服务。
  */
-export type BackendType = 'process' | 'remote' | 'cli';
+export type BackendType = 'process' | 'remote' | 'cli' | 'passthrough';
 export type ModelKind = 'chat' | 'completion' | 'embedding' | 'image' | 'asr' | 'tts';
 
 export interface HealthCheckConfig {
@@ -46,6 +47,17 @@ export interface BackendConfig {
   queue_timeout_ms: number;
   restart?: { max_retries: number; backoff_base_ms: number };
   auth?: { header: string; value: string };
+  /**
+   * 上游 API Key：注入 `Authorization: Bearer <api_key>`（backend.auth 显式配置时以 auth 为准）。
+   * 缺省则原样透传客户端自带的 Authorization —— 即「上游 key 同自身设置」，
+   * 客户端没带就原样不带（由上游自行 401），网关不做拦截。
+   */
+  api_key?: string;
+  /**
+   * HTTP 代理（如 http://127.0.0.1:8389）：配置后转发与健康检查均经该代理连接上游
+   * （undici ProxyAgent；https 上游走 CONNECT 隧道）。缺省直连。
+   */
+  proxy?: string;
   required_memory?: { mem_mb: number };
   /** 驱逐优先级，越大越不易被驱逐（默认 0） */
   priority: number;
@@ -95,9 +107,20 @@ export interface ProxyConfig {
   raw_log_max_bytes: number;
 }
 
+/** 后端 stdout/stderr 归档增长策略（<data_dir>/logs/<backend>.log） */
+export interface LogsConfig {
+  /** run=每次拉起后端清空只留本次运行；day=按天切并保留 keep_days 天（默认）；append=单文件追加 */
+  mode: 'run' | 'day' | 'append';
+  /** day 模式保留几天的历史文件；0 = 只留当天 */
+  keep_days: number;
+  /** 单文件上限（字节），超限截断保留最新内容；0 = 不限 */
+  max_bytes: number;
+}
+
 export interface AppConfig {
   server: ServerConfig;
   storage: StorageConfig;
+  logs: LogsConfig;
   resources: ResourcesConfig;
   proxy: ProxyConfig;
   backends: BackendConfig[];
@@ -121,7 +144,7 @@ export interface BackendRuntime {
   pgid?: number;
   inflight: number;
   queued: number;
-  /** 最后一次请求「结束」时间（闲置计时起点） */
+  /** 最后一次请求「结束」时间（闲置计时起点）；0 = 从未活跃过 */
   lastActivityAt: number;
   startedAt?: number;
   readyAt?: number;
@@ -186,8 +209,17 @@ export interface RequestLog {
   req_raw?: string;
   /** 失败时记录的上游响应头部原文（log_raw_on_error 开启时） */
   resp_raw?: string;
-  /** 时间线（ms）：排队 / 后端启动 / 后端首包 / 总时长 */
-  timeline?: { queue: number; backend_start: number; backend_ttfb: number; total: number };
+  /** 时间线（ms）：排队 / 后端启动 / 后端响应头 / 响应首字节 / 总时长 */
+  timeline?: {
+    queue: number;
+    backend_start: number;
+    backend_ttfb: number;
+    /** 上游响应体首字节（流打开）。SSE 心跳与 role-only 起始帧早于首 token，故不等于 TTFT */
+    first_byte?: number;
+    /** ttft_ms 的取值来源：token=首个含 token 的帧；first_byte=认不出 token 帧，退回首字节 */
+    ttft_source?: 'token' | 'first_byte';
+    total: number;
+  };
 }
 
 export interface BackendEventRow {

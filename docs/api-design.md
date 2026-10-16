@@ -47,7 +47,7 @@
 
 - 请求：OpenAI Chat Completions 体；从 body 提取 `model`、`stream`。
 - 非流式：透传 JSON，解析 `usage`（含 `prompt_tokens_details.cached_tokens`）落统计。
-- 流式（`stream:true`）：`Content-Type: text/event-stream` 逐块透传，首块记 TTFT；旁路解析末尾 usage chunk。
+- 流式（`stream:true`）：`Content-Type: text/event-stream` 逐块透传，**首个携带 token 的帧**记 TTFT（role-only 起始帧、`: ping` 注释心跳不算，`timeline.first_byte` 记录流打开时刻）；旁路解析末尾 usage chunk。
 - 响应头：`X-Aya-Request-Id`；流式加 `Cache-Control: no-cache`、`X-Accel-Buffering: no`。
 
 请求示例（客户端视角，与官方一致）：
@@ -320,7 +320,7 @@
 | 请求明细 Requests | B4 requests（过滤分页）→ 点击行 B5 详情下钻 |
 | 后端状态 Backends | B1 backends（状态/闲置倒计时）+ B1a load/unload 按钮 + GET resources 内存面板 + B6 累计 + 手动 start/stop/restart |
 
-自动刷新：Overview/Trends/Backends 默认 10s 轮询；时间范围为全局状态，切页保持。
+自动刷新：顶栏统一节拍 5s/10s/30s/60s/关（默认 10s，localStorage 记忆），总览/趋势/请求明细/后端状态跟随同一节拍；标签页切后台自动暂停、回到前台立即补一次。面板右上角显示「刷新中 / 更新于」，后端状态的闲置倒计时与运行时长在两次轮询之间按秒本地插值。时间范围为全局状态，切页保持，并随刷新节拍一起滑动。
 
 ---
 

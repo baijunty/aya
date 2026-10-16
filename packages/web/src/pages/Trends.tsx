@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import type { EChartsOption } from 'echarts';
 import { api } from '../api';
-import { usePoll, useRange } from '../App';
+import { useRange } from '../App';
+import { usePoll } from '../refresh';
 import { Chart, baseGrid, axisStyle } from '../components/Chart';
 
 const METRICS: Array<[string, string]> = [

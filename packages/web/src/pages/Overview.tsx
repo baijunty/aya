@@ -1,5 +1,6 @@
 import { api } from '../api';
-import { usePoll, useRange } from '../App';
+import { useRange } from '../App';
+import { usePoll } from '../refresh';
 import { Chart, baseGrid, axisStyle } from '../components/Chart';
 
 function fmt(n: number | null | undefined): string {

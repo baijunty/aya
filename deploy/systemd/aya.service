@@ -1,0 +1,54 @@
+# Aya — AI 模型请求转发管理与统计系统（systemd 系统级服务）
+#
+# 安装（需 root）：
+#   sudo cp deploy/systemd/aya.service /etc/systemd/system/aya.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aya
+# 代码更新后：pnpm -r build && sudo systemctl restart aya
+#
+# 运行用户说明：后端二进制/模型位于 /home/bai、/mnt/ssd 下（见 config.yaml 的
+# command/cwd），服务用户必须能读写这些路径与 <config目录>/data/。默认用 bai；
+# 若改用专用用户（如 aya），需保证其可访问上述路径。
+
+[Unit]
+Description=Aya — AI 模型请求转发网关（OpenAI 兼容 API + 统计看板, :8080）
+Documentation=file:///mnt/ssd/code/aya/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bai
+Group=bai
+WorkingDirectory=/mnt/ssd/code/aya
+
+# 相对 storage.path 按配置文件所在目录解析，与 cwd 无关；此处仍固定工作目录便于排查
+ExecStart=/usr/bin/node /mnt/ssd/code/aya/packages/server/dist/index.js --config /mnt/ssd/code/aya/config.yaml
+
+# 网关常驻：崩溃自动拉起；连续快速重启会触发 systemd 默认速率限制进入 failed，
+# 修复后用 `systemctl reset-failed aya` 复位
+Restart=always
+RestartSec=5
+
+# 优雅停机：服务收到 SIGTERM 后 drain 在途请求 → 对托管后端子进程组 SIGTERM →
+# 超时 SIGKILL（packages/server/src/index.ts、backend/manager.ts）。给足卸载时间。
+KillSignal=SIGTERM
+TimeoutStopSec=90
+# 兜底：单元停止时，cgroup 内残留的托管后端进程（llama-server 等）随组一并回收，
+# 避免显存/内存泄漏成孤儿进程
+KillMode=control-group
+
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 可选覆盖（存在才加载），如自定义端口/代理：NODE_OPTIONS=...
+EnvironmentFile=-/etc/sysconfig/aya
+
+LimitNOFILE=65536
+
+# 基础加固（保守集）。更严格的 ProtectSystem=/ProtectHome= 会挡住 /home/bai 下的
+# 后端二进制与 /mnt/ssd 数据，按需自行放开评估后再启用。
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

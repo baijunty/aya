@@ -1,0 +1,31 @@
+# Aya — 用户级服务变体（无需 root，以当前登录用户 bai 运行）
+#
+# 安装：
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/systemd/aya-user.service ~/.config/systemd/user/aya.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now aya
+# 退出登录后仍要常驻（需 root 执行一次）：
+#   sudo loginctl enable-linger bai
+#
+# 与系统级 aya.service 二选一，勿同时启用（都会绑 :8080）。
+
+[Unit]
+Description=Aya — AI 模型请求转发网关（用户级, :8080）
+Documentation=file:///mnt/ssd/code/aya/README.md
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/ssd/code/aya
+ExecStart=/usr/bin/node /mnt/ssd/code/aya/packages/server/dist/index.js --config /mnt/ssd/code/aya/config.yaml
+
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=90
+KillMode=control-group
+
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

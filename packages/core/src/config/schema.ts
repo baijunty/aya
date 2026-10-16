@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { parseDuration } from '../util/time.js';
+import { parseByteSize } from '../util/bytes.js';
 
 /** 时长字段：接受 "5m"/"30s"/数字(ms)，归一化为毫秒 */
 const durationMs = z
@@ -7,6 +8,18 @@ const durationMs = z
   .transform((v, ctx) => {
     try {
       return parseDuration(v as string | number);
+    } catch (e) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: (e as Error).message });
+      return z.NEVER;
+    }
+  });
+
+/** 字节数字段：接受 "512kb"/"20mb"/数字(字节)，归一化为字节数 */
+const byteSize = z
+  .union([z.string(), z.number()])
+  .transform((v, ctx) => {
+    try {
+      return parseByteSize(v as string | number);
     } catch (e) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: (e as Error).message });
       return z.NEVER;
@@ -34,7 +47,7 @@ export const healthCheckSchema = z
 export const backendSchema = z
   .object({
     name: z.string().min(1),
-    type: z.enum(['process', 'remote', 'cli']),
+    type: z.enum(['process', 'remote', 'cli', 'passthrough']),
     base_url: z.string().url().optional(),
     command: z.string().optional(),
     args: z.array(z.string()).optional(),
@@ -69,6 +82,16 @@ export const backendSchema = z
       }))
       .optional(),
     auth: z.object({ header: z.string(), value: z.string() }).optional(),
+    /** 上游 API Key（注入 Authorization: Bearer）；auth 显式配置时以 auth 为准；
+     *  两者都缺省则原样透传客户端的 Authorization（上游 key 同自身设置） */
+    api_key: z.string().min(1).optional(),
+    /** HTTP 代理（如 http://127.0.0.1:8389）：转发与健康检查都经此代理连接上游；
+     *  https 上游走 CONNECT 隧道。仅对有 HTTP 上游的后端（remote/passthrough/process）有意义 */
+    proxy: z
+      .string()
+      .url()
+      .refine((v) => /^https?:\/\//.test(v), { message: 'proxy must be an http(s) URL' })
+      .optional(),
     required_memory: z.object({ mem_mb: z.number().int().positive() }).optional(),
     priority: z.number().int().optional().transform((v) => v ?? 0),
     evictable: boolDefault(true),
@@ -80,6 +103,15 @@ export const backendSchema = z
     }
     if (b.type === 'remote' && !b.base_url) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['base_url'], message: `remote backend "${b.name}" requires base_url` });
+    }
+    if (b.type === 'passthrough' && !b.base_url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['base_url'], message: `passthrough backend "${b.name}" requires base_url` });
+    }
+    if (b.type === 'cli' && b.api_key) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['api_key'], message: `cli backend "${b.name}" has no HTTP upstream, api_key is meaningless` });
+    }
+    if (b.type === 'cli' && b.proxy) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['proxy'], message: `cli backend "${b.name}" has no HTTP upstream, proxy is meaningless` });
     }
   })
   .transform((b) => ({
@@ -142,6 +174,27 @@ export const storageSchema = z.object({
   retention_days: z.number().int().positive().default(90),
 });
 
+/**
+ * 后端 stdout/stderr 归档（<data_dir>/logs/<backend>.log）的增长策略。
+ * 默认按天切：跨天时把旧文件改名为 <backend>-YYYY-MM-DD.log 另存，当天另起新文件，
+ * 超过 keep_days 的历史文件自动删除——日志只在「当天/最近几天」内堆积，不会无限增长。
+ */
+export const logsSchema = z
+  .object({
+    /** run=每次拉起后端清空，只留本次运行（cli 后端每请求一次 spawn，即只留最近一次请求）；
+     *  day=按天切，保留最近 keep_days 天（默认）；append=单文件一直追加（旧行为，仅配合 max_bytes 使用） */
+    mode: z.enum(['run', 'day', 'append']).optional(),
+    /** day 模式下保留几天的历史文件；0 = 只留当天 */
+    keep_days: z.number().int().nonnegative().optional(),
+    /** 单个日志文件大小上限，超限即截断保留最新内容（旧内容丢弃）；0 = 不限 */
+    max_bytes: byteSize.optional(),
+  })
+  .transform((l) => ({
+    mode: l.mode ?? ('day' as const),
+    keep_days: l.keep_days ?? 3,
+    max_bytes: l.max_bytes ?? 20 * 1024 * 1024,
+  }));
+
 export const proxySchema = z.object({
   idle_response_timeout: durationMs.optional(),
   idle_response_timeout_ms: z.number().int().optional(),
@@ -159,6 +212,7 @@ export const appConfigSchema = z
   .object({
     server: serverSchema.default({}),
     storage: storageSchema.default({}),
+    logs: logsSchema.default({}),
     resources: resourcesSchema.default({}),
     proxy: proxySchema.default({}),
     backends: z.array(backendSchema).default([]),

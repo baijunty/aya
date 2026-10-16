@@ -27,9 +27,109 @@ export function sanitizeRaw(s: string): string {
   return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '\uFFFD');
 }
 
+export interface ScannedHead {
+  model?: string;
+  stream?: boolean;
+}
+
+/**
+ * 从（可能不完整的）JSON 前缀中扫描顶层 "model" / "stream" 字段。
+ * 整体 JSON.parse 只对完整文档有效：请求体超过 PEEK_MAX 时前缀永远解析不出来，
+ * 而 model 通常在头部——这里用字节级状态机补上这条路。
+ * 跟踪字符串/转义/嵌套深度，只认顶层对象的键，消息内容里的 "model" 不会误中；
+ * UTF-8 多字节安全（后续字节均 >= 0x80，不会撞上 ASCII 结构字节）。
+ * 字符串值返回的是 JSON 原文切片（未做反转义）；模型名不含转义，够用。
+ */
+export function scanHeadFields(buf: Buffer): ScannedHead {
+  const out: ScannedHead = {};
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let strStart = 0;
+  let lastKey: string | undefined; // 最近解析出的顶层键
+  let pendingKey = false; // 当前字符串是顶层键
+  let pendingColon = false; // 刚见过顶层 ':' 且值尚未开始
+  let captureModel = false; // 当前字符串是 "model" 的值
+  let captureStream = false; // 当前字符串是 "stream" 的值
+  let litStream = false; // 正在捕获 stream 的裸字面量（true/false）
+  let litStart = 0;
+
+  for (let i = 0; i < buf.length; i++) {
+    const c = buf[i]!;
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (c === 0x5c) { esc = true; continue; } // \
+      if (c !== 0x22) continue; // " 字符串结束
+      inStr = false;
+      const s = buf.toString('utf8', strStart, i);
+      if (captureModel) {
+        out.model = s;
+        captureModel = false;
+        if (out.stream !== undefined) return out;
+      } else if (captureStream) {
+        out.stream = s === 'true';
+        captureStream = false;
+      } else if (pendingKey && depth === 1) {
+        lastKey = s;
+        pendingKey = false;
+      }
+      continue;
+    }
+    if (litStream) {
+      // 裸字面量以 , } ] 或空白结束
+      if (c === 0x2c || c === 0x7d || c === 0x5d || c <= 0x20) {
+        out.stream = buf.toString('utf8', litStart, i) === 'true';
+        litStream = false;
+        if (out.model !== undefined) return out;
+      }
+      continue;
+    }
+    switch (c) {
+      case 0x22: // "
+        strStart = i + 1;
+        inStr = true;
+        if (depth === 1) {
+          if (pendingColon) {
+            if (lastKey === 'model') captureModel = true;
+            else if (lastKey === 'stream') captureStream = true;
+            pendingColon = false; // 值已开始
+          } else {
+            pendingKey = true;
+          }
+        }
+        break;
+      case 0x7b: // {
+      case 0x5b: // [
+        depth++;
+        pendingColon = false; // 值（对象/数组）已开始
+        break;
+      case 0x7d: // }
+      case 0x5d: // ]
+        depth--;
+        pendingColon = false;
+        break;
+      case 0x3a: // :
+        if (depth === 1) pendingColon = true;
+        break;
+      case 0x2c: // ,
+        pendingColon = false;
+        break;
+      default:
+        if (c <= 0x20) break; // 空白
+        if (depth === 1 && pendingColon && lastKey === 'stream') {
+          litStream = true;
+          litStart = i;
+          pendingColon = false;
+        }
+    }
+  }
+  return out;
+}
+
 /**
  * 从请求流中「有限窥探」model/stream 字段，同时保持完整流可转发。
- * - JSON：缓冲前缀直到能解析出 model（或流结束/超时）。
+ * - JSON：缓冲前缀直到能解析出 model（或流结束/超时）。整体 parse 失败时
+ *   退化为前缀扫描（scanHeadFields），保证 >PEEK_MAX 的请求体也能路由。
  * - multipart：busboy 观察 field，文件部分原样 tee 转发。
  */
 export function peekRequest(
@@ -50,6 +150,7 @@ function peekJson(raw: NodeJS.ReadableStream, opts: PeekOptions): Promise<Peeked
     let size = 0;
     let settled = false;
     let parsed: Record<string, unknown> | undefined;
+    let scanned: ScannedHead = {};
     const maxRaw = opts.maxRawBytes ?? 0;
     const rawChunks: Buffer[] = [];
     let rawSize = 0;
@@ -67,9 +168,27 @@ function peekJson(raw: NodeJS.ReadableStream, opts: PeekOptions): Promise<Peeked
       return false;
     };
 
+    /** 当前已知的 model/stream：优先整体 parse 结果，否则用字节级前缀扫描兜底 */
+    const head = (): ScannedHead => {
+      if (parsed) {
+        return {
+          model: typeof parsed.model === 'string' ? parsed.model : undefined,
+          stream: parsed.stream === true,
+        };
+      }
+      return scanned;
+    };
+
+    /** 刷新前缀扫描结果（请求体 > PEEK_MAX 或前缀截断时整体 parse 永远不成功） */
+    const refreshScan = (): void => {
+      if (!parsed) scanned = scanHeadFields(Buffer.concat(prefix));
+    };
+
     const finish = (): void => {
       if (settled) return;
       settled = true;
+      refreshScan();
+      const h = head();
       const fields: Record<string, unknown> = {};
       if (parsed) {
         for (const k of [
@@ -84,8 +203,8 @@ function peekJson(raw: NodeJS.ReadableStream, opts: PeekOptions): Promise<Peeked
       }
       resolve({
         body: out,
-        model: typeof parsed?.model === 'string' ? (parsed.model as string) : undefined,
-        stream: parsed?.stream === true,
+        model: h.model,
+        stream: h.stream,
         fields,
         rawHead: rawSize
           ? sanitizeRaw(Buffer.concat(rawChunks).toString('utf8').slice(0, maxRaw))
@@ -102,10 +221,10 @@ function peekJson(raw: NodeJS.ReadableStream, opts: PeekOptions): Promise<Peeked
       if (size < PEEK_MAX) {
         prefix.push(c);
         size += c.length;
-        if (tryParse() && parsed?.model !== undefined) {
-          // model 已拿到；继续透传剩余字节，但先 resolve
-          finish();
-        }
+        tryParse();
+        refreshScan();
+        // model 已拿到（完整 parse 或前缀扫描）即可放行，剩余字节继续透传
+        if (head().model !== undefined) finish();
       }
     });
     raw.on('end', () => {
