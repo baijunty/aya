@@ -314,3 +314,28 @@ export function purgeRetention(store: StatsStore, retentionDays: number): number
   store.db.prepare(`DELETE FROM backend_events WHERE ts < ?`).run(cutoff);
   return r.changes;
 }
+
+/**
+ * 手动清理：删除 ts_start 早于 beforeMs 的请求明细（backend_events 同批清理）。
+ * dryRun=true 只统计不删除，供前端确认框展示条数。
+ * 注意：DELETE 只释放页内空间，库文件本身不缩小（SQLite 后续写入会复用空闲页）。
+ */
+export function purgeBefore(
+  store: StatsStore,
+  beforeMs: number,
+  dryRun = false,
+): { requests: number; events: number } {
+  const db = store.db;
+  if (dryRun) {
+    const requests = (
+      db.prepare(`SELECT COUNT(*) c FROM request_logs WHERE ts_start < ?`).get(beforeMs) as { c: number }
+    ).c;
+    const events = (
+      db.prepare(`SELECT COUNT(*) c FROM backend_events WHERE ts < ?`).get(beforeMs) as { c: number }
+    ).c;
+    return { requests, events };
+  }
+  const r = db.prepare(`DELETE FROM request_logs WHERE ts_start < ?`).run(beforeMs);
+  const e = db.prepare(`DELETE FROM backend_events WHERE ts < ?`).run(beforeMs);
+  return { requests: r.changes, events: e.changes };
+}

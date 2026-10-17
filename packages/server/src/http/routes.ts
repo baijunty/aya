@@ -26,10 +26,12 @@ import {
   queryRequestDetail,
   queryBackendStats,
   queryEvents,
+  purgeBefore,
   autoGranularity,
   type Granularity,
   type Metric,
 } from '../stats/queries.js';
+import { logger } from '../log.js';
 
 export interface AppDeps {
   config: () => AppConfig;
@@ -547,6 +549,37 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
       return;
     }
     return detail;
+  });
+
+  // —— 清理过期请求明细 ——
+  // body: { before: <epoch ms>, dry_run?: boolean }。dry_run 只返回将删条数（前端确认框用），
+  // 实际删除同时按同一时间点清理 backend_events，与每日 retention 行为一致。
+  app.post('/api/v1/stats/requests/purge', { preHandler: guard }, async (req) => {
+    // 全局透传解析器把 body 留成原始流，这里自行缓冲 JSON
+    const chunks: Buffer[] = [];
+    for await (const c of req.raw) chunks.push(c as Buffer);
+    let body: { before?: unknown; dry_run?: unknown } = {};
+    if (chunks.length) {
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        throw AyaErrors.invalidRequest('request body must be JSON');
+      }
+    }
+    const before = Number(body.before);
+    if (!Number.isFinite(before) || before <= 0) {
+      throw AyaErrors.invalidRequest('"before" must be an epoch-ms timestamp', 'before');
+    }
+    if (before > nowMs()) {
+      throw AyaErrors.invalidRequest('"before" must not be in the future', 'before');
+    }
+    const dryRun = body.dry_run === true;
+    const counts = purgeBefore(deps.store, before, dryRun);
+    if (dryRun) {
+      return { dry_run: true, before, would_delete: counts.requests, events_would_delete: counts.events };
+    }
+    logger.info({ before, deleted: counts.requests, events_deleted: counts.events }, 'manual stats purge');
+    return { dry_run: false, before, deleted: counts.requests, events_deleted: counts.events };
   });
 
   // —— 后端维度统计 ——

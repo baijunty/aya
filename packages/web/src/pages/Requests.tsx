@@ -79,6 +79,15 @@ function DetailModal({ id, onClose }: { id: string; onClose: () => void }) {
   );
 }
 
+const PURGE_PRESETS = [
+  { days: 1, label: '1 天前' },
+  { days: 3, label: '3 天前' },
+  { days: 7, label: '一周前' },
+  { days: 14, label: '两周前' },
+  { days: 30, label: '一个月前' },
+  { days: 90, label: '三个月前' },
+];
+
 export function Requests() {
   const { from, to } = useRange();
   const [page, setPage] = useState(1);
@@ -86,10 +95,42 @@ export function Requests() {
   const [endpoint, setEndpoint] = useState('');
   const [status, setStatus] = useState('');
   const [detail, setDetail] = useState<string>();
-  const { data, refreshing, updatedAt } = usePoll(
+  const { data, refreshing, updatedAt, reload } = usePoll(
     () => api.requests(from, to, page, { model, endpoint, status }),
     [from, to, page, model, endpoint, status],
   );
+
+  // 过期数据清理：先 dry_run 数条数，确认框展示后再真删
+  const [purgeDays, setPurgeDays] = useState(7);
+  const [purging, setPurging] = useState(false);
+  const [purgeMsg, setPurgeMsg] = useState<string>();
+
+  async function onPurge() {
+    if (purging) return;
+    setPurging(true);
+    setPurgeMsg(undefined);
+    try {
+      const before = Date.now() - purgeDays * 86400_000;
+      const preview = await api.purgeRequests(before, true);
+      const n = preview.would_delete ?? 0;
+      if (n === 0) {
+        setPurgeMsg(`${fmtTime(before)} 之前已无数据`);
+        return;
+      }
+      const ok = window.confirm(
+        `将删除 ${fmtTime(before)} 之前的 ${n} 条请求记录（含后端事件 ${preview.events_would_delete ?? 0} 条），删除后不可恢复。确认清理？`,
+      );
+      if (!ok) return;
+      const r = await api.purgeRequests(before, false);
+      setPurgeMsg(`已清理 ${r.deleted ?? 0} 条请求记录`);
+      setPage(1);
+      reload();
+    } catch (e) {
+      setPurgeMsg(`清理失败：${(e as Error).message}`);
+    } finally {
+      setPurging(false);
+    }
+  }
 
   // 定时刷新带进来的新增条数：只在第一页提示，翻页时不去打扰正在看历史的用户
   const prevTotal = useRef<number | undefined>(undefined);
@@ -124,6 +165,21 @@ export function Requests() {
           <option value="ok">成功</option>
           <option value="fail">失败</option>
         </select>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          {purgeMsg && <span className="muted">{purgeMsg}</span>}
+          <select
+            value={purgeDays}
+            title="清理早于该时间点的请求明细"
+            onChange={(e) => { setPurgeDays(Number(e.target.value)); setPurgeMsg(undefined); }}
+          >
+            {PURGE_PRESETS.map((p) => (
+              <option key={p.days} value={p.days}>{p.label}</option>
+            ))}
+          </select>
+          <button className="btn" disabled={purging} onClick={() => void onPurge()}>
+            {purging ? '清理中…' : '清理过期数据'}
+          </button>
+        </div>
       </div>
       <table>
         <thead>

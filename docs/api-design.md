@@ -298,6 +298,26 @@
 ```
 `timeline_ms` 供前端画「到达→排队→后端启动→首包→完成」时间线。
 
+### B5a. 清理过期请求明细
+
+`POST /api/v1/stats/requests/purge`
+
+请求体 JSON：`{ "before": <epoch ms>, "dry_run": true|false }`。`before` 必须是不晚于当前时刻的时间戳；删除 `ts_start < before` 的 request_logs，并按同一时间点清理 backend_events（与每日 retention 行为一致）。
+
+- `dry_run=true` 只统计不删除，供前端确认框展示条数：
+
+```json
+{ "dry_run": true, "before": 1728950400000, "would_delete": 1234, "events_would_delete": 5 }
+```
+
+- `dry_run=false`（缺省）实际删除：
+
+```json
+{ "dry_run": false, "before": 1728950400000, "deleted": 1234, "events_deleted": 5 }
+```
+
+注意：DELETE 只释放库内空闲页，SQLite 文件本身不缩小（后续写入会复用空闲页）。`before` 缺失/非法或指向未来 → 400 `invalid_request`。
+
 ### B6. 后端维度统计
 
 `GET /api/v1/stats/backends?from=&to=`

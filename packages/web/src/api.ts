@@ -140,6 +140,17 @@ export const api = {
         .join('')}`,
     ),
   requestDetail: (id: string) => get<Record<string, unknown>>(`/api/v1/stats/requests/${id}`),
+  purgeRequests: (before: number, dryRun: boolean) =>
+    postJson<{
+      dry_run: boolean;
+      before: number;
+      /** dry_run=false 时返回 */
+      deleted?: number;
+      events_deleted?: number;
+      /** dry_run=true 时返回 */
+      would_delete?: number;
+      events_would_delete?: number;
+    }>('/api/v1/stats/requests/purge', { before, dry_run: dryRun }),
   backends: () => get<{ backends: BackendStatus[] }>('/api/v1/backends'),
   backendStats: (from: number, to: number) =>
     get<{ backends: Array<Record<string, unknown>> }>(`/api/v1/stats/backends?from=${from}&to=${to}`),
