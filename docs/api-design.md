@@ -255,7 +255,8 @@
 `GET /api/v1/stats/series?from=&to=&granularity=hour&metric=requests&model=&endpoint=`
 
 - `granularity` ∈ `minute|hour|day`（默认按范围自适应：≤2d→hour，≤31d→day，其余→hour）。
-- `metric` ∈ `requests|latency|ttft|tokens|cache`（默认 `requests`；`latency`/`ttft` 返回 avg+p95）。
+- `metric` ∈ `requests|latency|ttft|pp|tg|tokens|cache`（默认 `requests`；`latency`/`ttft` 返回 avg+p95，单位 ms）。
+- `pp`/`tg` 为 prefill / decode 速度趋势（avg+p95，单位 tok/s），口径与 B4 明细列一致：仅统计**流式且 TTFT 量到 token 帧**的请求，pp=(prompt−cached)/(ttft−排队)，tg=completion/(latency−ttft)；配合 `model=` 可看单个 chat 模型的速度走势。
 
 ```json
 { "granularity": "hour", "metric": "requests",
@@ -336,8 +337,8 @@
 | 页面 | 调用 |
 |---|---|
 | 总览 Overview | B2 summary（今日/7d/30d 切换） |
-| 趋势 Trends | B3 series（请求量、延迟、token、模型占比） |
-| 请求明细 Requests | B4 requests（过滤分页）→ 点击行 B5 详情下钻 |
+| 趋势 Trends | B3 series（请求量、延迟、token、模型占比；pp/tg 速度趋势 + 模型过滤） |
+| 请求明细 Requests | B4 requests（过滤分页）→ 点击行 B5 详情下钻；B5a purge 按时间段清理过期数据（dry_run 预览条数 + 确认框） |
 | 后端状态 Backends | B1 backends（状态/闲置倒计时）+ B1a load/unload 按钮 + GET resources 内存面板 + B6 累计 + 手动 start/stop/restart |
 
 自动刷新：顶栏统一节拍 5s/10s/30s/60s/关（默认 10s，localStorage 记忆），总览/趋势/请求明细/后端状态跟随同一节拍；标签页切后台自动暂停、回到前台立即补一次。面板右上角显示「刷新中 / 更新于」，后端状态的闲置倒计时与运行时长在两次轮询之间按秒本地插值。时间范围为全局状态，切页保持，并随刷新节拍一起滑动。

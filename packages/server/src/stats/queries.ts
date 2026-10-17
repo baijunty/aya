@@ -88,7 +88,7 @@ export function querySummary(store: StatsStore, f: RangeFilter): SummaryResult {
 }
 
 export type Granularity = 'minute' | 'hour' | 'day';
-export type Metric = 'requests' | 'latency' | 'ttft' | 'tokens' | 'cache';
+export type Metric = 'requests' | 'latency' | 'ttft' | 'tokens' | 'cache' | 'pp' | 'tg';
 
 const BUCKET_FMT: Record<Granularity, string> = {
   minute: '%Y-%m-%dT%H:%M:00',
@@ -172,6 +172,40 @@ export function querySeries(
       return [...groups.entries()].map(([b, vals]) => ({
         bucket: Date.parse(b),
         avg: Math.round(vals.reduce((a, x) => a + x, 0) / vals.length),
+        p95: percentile(vals, 95),
+      }));
+    }
+    case 'pp':
+    case 'tg': {
+      // 与明细页 pp/tg 同口径：仅流式且 TTFT 量到 token 帧的请求；
+      // pp = (prompt−cached)/(ttft−排队)，tg = completion/(latency−ttft)，单位 tok/s
+      const expr =
+        metric === 'pp'
+          ? `(prompt_tokens - COALESCE(cached_tokens,0)) * 1000.0 / (ttft_ms - COALESCE(json_extract(timeline,'$.queue'),0))`
+          : `completion_tokens * 1000.0 / (latency_ms - ttft_ms)`;
+      const guards =
+        metric === 'pp'
+          ? `prompt_tokens IS NOT NULL AND (prompt_tokens - COALESCE(cached_tokens,0)) > 0
+             AND (ttft_ms - COALESCE(json_extract(timeline,'$.queue'),0)) > 0`
+          : `completion_tokens > 0 AND latency_ms IS NOT NULL AND (latency_ms - ttft_ms) > 0`;
+      const srows = db
+        .prepare(
+          `SELECT strftime('${fmt}', ts_start/1000,'unixepoch') b, ${expr} v
+           FROM request_logs
+           WHERE ${sql} AND is_stream = 1 AND ttft_ms IS NOT NULL
+             AND json_extract(timeline,'$.ttft_source') = 'token' AND ${guards}
+           ORDER BY b, v`,
+        )
+        .all(...params) as Array<{ b: string; v: number }>;
+      const groups = new Map<string, number[]>();
+      for (const r of srows) {
+        let arr = groups.get(r.b);
+        if (!arr) groups.set(r.b, (arr = []));
+        arr.push(Math.round(r.v * 10) / 10);
+      }
+      return [...groups.entries()].map(([b, vals]) => ({
+        bucket: Date.parse(b),
+        avg: Number((vals.reduce((a, x) => a + x, 0) / vals.length).toFixed(1)),
         p95: percentile(vals, 95),
       }));
     }

@@ -129,10 +129,11 @@ export interface Voice {
 export const api = {
   summary: (from: number, to: number) =>
     get<Summary>(`/api/v1/stats/summary?from=${from}&to=${to}`),
-  series: (from: number, to: number, metric: string, granularity?: string) =>
+  series: (from: number, to: number, metric: string, granularity?: string, model?: string) =>
     get<{ granularity: string; metric: string; series: SeriesPoint[] }>(
-      `/api/v1/stats/series?from=${from}&to=${to}&metric=${metric}${granularity ? `&granularity=${granularity}` : ''}`,
+      `/api/v1/stats/series?from=${from}&to=${to}&metric=${metric}${granularity ? `&granularity=${granularity}` : ''}${model ? `&model=${encodeURIComponent(model)}` : ''}`,
     ),
+  models: () => get<{ models: Array<{ name: string; kind: string; enabled: boolean }> }>('/api/v1/models'),
   requests: (from: number, to: number, page: number, filters: Record<string, string> = {}) =>
     get<{ total: number; page: number; page_size: number; items: RequestRow[] }>(
       `/api/v1/stats/requests?from=${from}&to=${to}&page=${page}&page_size=50${Object.entries(filters)

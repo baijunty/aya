@@ -9,6 +9,8 @@ const METRICS: Array<[string, string]> = [
   ['requests', '请求量'],
   ['latency', '延迟'],
   ['ttft', 'TTFT'],
+  ['pp', 'Prefill 速度'],
+  ['tg', 'Decode 速度'],
   ['tokens', 'Token'],
   ['cache', '缓存'],
 ];
@@ -16,19 +18,23 @@ const METRICS: Array<[string, string]> = [
 export function Trends() {
   const { from, to } = useRange();
   const [metric, setMetric] = useState('requests');
-  const { data } = usePoll(() => api.series(from, to, metric), [from, to, metric]);
+  const [model, setModel] = useState('');
+  // 模型下拉：配置里的模型基本不变，60s 拉一次即可
+  const { data: modelsData } = usePoll(() => api.models(), [], 60000);
+  const { data } = usePoll(() => api.series(from, to, metric, undefined, model), [from, to, metric, model]);
 
   const pts = data?.series ?? [];
   const labels = pts.map((p) => new Date(p.bucket).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit' }));
 
   let option: EChartsOption;
-  if (metric === 'latency' || metric === 'ttft') {
+  if (metric === 'latency' || metric === 'ttft' || metric === 'pp' || metric === 'tg') {
+    const unit = metric === 'pp' || metric === 'tg' ? 'tok/s' : 'ms';
     option = {
       grid: baseGrid,
       tooltip: { trigger: 'axis' },
       legend: { textStyle: { color: '#8494a3' } },
       xAxis: { type: 'category', data: labels, ...axisStyle },
-      yAxis: { type: 'value', name: 'ms', ...axisStyle },
+      yAxis: { type: 'value', name: unit, ...axisStyle },
       series: [
         { name: 'avg', type: 'line', smooth: true, data: pts.map((p) => p.avg), itemStyle: { color: '#4c9aff' } },
         { name: 'p95', type: 'line', smooth: true, data: pts.map((p) => p.p95), itemStyle: { color: '#d29922' } },
@@ -76,6 +82,16 @@ export function Trends() {
           ))}
         </span>
       </h3>
+      <div style={{ marginBottom: 8 }}>
+        <select value={model} onChange={(e) => setModel(e.target.value)} title="按模型过滤（pp/tg 仅流式 chat 请求有数据）">
+          <option value="">全部模型</option>
+          {(modelsData?.models ?? [])
+            .filter((m) => m.enabled)
+            .map((m) => (
+              <option key={m.name} value={m.name}>{m.name}</option>
+            ))}
+        </select>
+      </div>
       <Chart option={option} height={380} />
     </div>
   );
