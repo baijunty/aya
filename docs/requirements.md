@@ -141,6 +141,7 @@
 **Token 统计口径：**
 
 - 优先解析后端应答中的 `usage` 字段（含流式响应最后一个 chunk 携带的 usage，需开启 `stream_options.include_usage` 透传约定）；
+- 后端回 `gzip/deflate/br/zstd` 压缩应答（远程 API 转发的常态）时，统计侧先解压再解析，转发侧仍按原字节透传——否则远程转发后端的 tokens/cached/TTFT 会集体缺失，明细里只剩延迟；
 - 后端未返回 usage 时，按可配置的本地估算兜底（对 chat 用 tokenizer 估算，估算值打 `estimated` 标记）；ASR 记音频秒数，TTS 记输入字符数与音频字节数，图片记张数/尺寸。
 
 **聚合统计（按 模型 × 时间粒度[分钟/小时/天] 预聚合或实时 SQL 聚合）：**

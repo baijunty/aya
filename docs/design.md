@@ -375,13 +375,14 @@ HTTP 请求
 | 普通 JSON | 其余 | 透传 body；解析 `usage` 提取 token/cached_tokens |
 | 错误 | 上游 4xx/5xx | 原样透传状态码与 body |
 
-SSE 透传用 `pipeline(upstream.body, reply.raw)` 保证背压正确；旁路 usage 解析用 `Transform` 只**观察**不**改写**字节流。
+SSE 透传用 `pipeline(upstream.body, reply.raw)` 保证背压正确；旁路 usage 解析用 `Transform` 只**观察**不**改写**字节流（压缩响应先解一份明文再解析，见 5.3）。
 
 ### 5.3 usage / token 提取
 
 - 非流式：解析响应 `usage.{prompt_tokens, completion_tokens, total_tokens}` 与 `usage.prompt_tokens_details.cached_tokens`。
 - 流式：约定上游在最后一个 SSE chunk 带 `usage`（OpenAI `stream_options.include_usage` 语义）；旁路解析器在流结束前捕获该 chunk 的 usage。
-- 兜底：上游无 usage 时，chat 类用 `gpt-tokenizer` 对请求 messages 估算 prompt tokens、对累积输出估算 completion tokens，置 `tokens_estimated=true`；ASR 记音频字节/时长，TTS 记输入字符数，图片记张数。缓存命中率在无 usage 时记 0 并随 `estimated` 标记展示。
+- **压缩响应必须先解压**：上游按客户端 `accept-encoding` 回 `gzip/deflate/br/zstd` 是远端 API 的常态，而 `undici.request` 不解压（只有 `fetch` 会）。把压缩字节直接喂给 SSE/JSON 解析器，一帧也解不出来——tokens、cached、TTFT（退回首字节，pp/tg 随之无数）、上游错误信息集体落空，且只有远程转发后端中招（本机 llama-server 不压缩）。故旁路观察按 `content-encoding` 解一份明文再解析（`proxy/decode.ts`），**转发给客户端的仍是原始字节**，`content-encoding` 原样保留、由客户端自行解压；`resp_bytes` 记线上字节（压缩后）。解码是增量的（压缩体分块下发也要能解出首 token），收尾等明文吐尽再固化 usage，否则末尾的 usage chunk 会漏。
+- 兜底：上游无 usage 时，chat 类用 `gpt-tokenizer` 对请求 messages 估算 prompt tokens、对累积输出估算 completion tokens，置 `tokens_estimated=true`；流式侧同样累计 `delta.content`/`reasoning_content`（及 `/v1/completions` 的 `choices[].text`），末尾**整段编码一次**（逐帧编码会把跨帧的 subword 各算一遍），故客户端不带 `stream_options.include_usage` 也有 token 数。ASR 记音频字节/时长，TTS 记输入字符数，图片记张数。缓存命中率在无 usage 时记 0 并随 `estimated` 标记展示。
 
 ### 5.4 超时与取消
 

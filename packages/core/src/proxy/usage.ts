@@ -53,6 +53,30 @@ export function frameHasToken(obj: unknown): boolean {
   return false;
 }
 
+/**
+ * 一个 SSE 帧里「生成出来的文本」——用于上游不带 usage 时本地估算 completion tokens。
+ * 与 frameHasToken 同一套认法：chat 走 delta.content / reasoning_*，
+ * /v1/completions 方言走 choices[].text；role-only 与 progress 帧自然贡献 0。
+ */
+export function frameText(obj: unknown): string {
+  const choices = (obj as { choices?: unknown } | null)?.choices;
+  if (!Array.isArray(choices)) return '';
+  let out = '';
+  for (const c of choices) {
+    if (!c || typeof c !== 'object') continue;
+    const o = c as Record<string, unknown>;
+    // /v1/completions 方言：choices[].text
+    if (typeof o.text === 'string') out += o.text;
+    const delta = o.delta;
+    if (!delta || typeof delta !== 'object') continue;
+    const d = delta as Record<string, unknown>;
+    for (const k of ['content', 'reasoning_content', 'reasoning', 'thinking']) {
+      if (typeof d[k] === 'string') out += d[k] as string;
+    }
+  }
+  return out;
+}
+
 /** 合并 usage：后到的非空字段覆盖（流式末尾 usage chunk 语义） */
 export function mergeUsage(base: Usage | undefined, extra: Usage | undefined): Usage | undefined {
   if (!base) return extra;

@@ -41,6 +41,12 @@ models:
   - { name: pt-chat, backend: pt-keyed, kind: chat }
   - { name: pt-open, backend: pt-passthru, kind: chat }
   - { name: pt-authm, backend: pt-auth, kind: chat }
+  # 压缩响应 / 不带 usage 的流式（mock 按模型名切换上游形态）
+  - { name: mock-enc-gzip, backend: pt-keyed, kind: chat }
+  - { name: mock-enc-br, backend: pt-keyed, kind: chat }
+  - { name: mock-enc-zstd, backend: pt-keyed, kind: chat }
+  - { name: mock-encfail-gzip, backend: pt-keyed, kind: chat }
+  - { name: mock-nousage, backend: pt-keyed, kind: chat }
 `,
   );
   aya = createApp(cfgPath);
@@ -188,6 +194,66 @@ models:
     expect(res.status).toBe(200);
     const j = await res.json();
     expect(j.auth).toBe('Bearer sk-client');
+  });
+});
+
+describe('压缩上游响应（远端 API 形态）：明细照常出 tokens / TTFT', () => {
+  async function chat(model: string, stream: boolean) {
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer sk-gw-own' },
+      body: JSON.stringify({ model, stream, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    const text = await res.text();
+    await new Promise((r) => setTimeout(r, 400));
+    const d = await (
+      await fetch(`${base}/api/v1/stats/requests/${res.headers.get('x-aya-request-id')!}`, {
+        headers: { authorization: 'Bearer sk-gw-own' },
+      })
+    ).json();
+    return { res, text, d };
+  }
+
+  for (const enc of ['gzip', 'br', 'zstd'] as const) {
+    it(`${enc} 压缩的 SSE：usage/TTFT 解得出，下发给客户端的仍是压缩字节`, async () => {
+      const { res, text, d } = await chat(`mock-enc-${enc}`, true);
+      expect(res.status).toBe(200);
+      // 转发不改写字节流：编码头原样保留，客户端自行解压后拿到完整 SSE
+      expect(res.headers.get('content-encoding')).toBe(enc);
+      expect(text).toContain('data: [DONE]');
+      expect(d.total_tokens).toBe(14);
+      expect(d.prompt_tokens).toBe(10);
+      expect(d.completion_tokens).toBe(4);
+      expect(d.cached_tokens).toBe(6);
+      expect(d.tokens_estimated).toBe(false);
+      // TTFT 必须落在首个「带 token 的帧」上（不是首字节），否则明细里 pp/tg 不会给数
+      expect(d.timeline_ms?.ttft_source).toBe('token');
+      expect(Number(d.ttft_ms)).toBeGreaterThan(0);
+    });
+  }
+
+  it('gzip 压缩的非流式 JSON：usage 照常落库', async () => {
+    const { res, d } = await chat('mock-enc-gzip', false);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-encoding')).toBe('gzip');
+    expect(d.total_tokens).toBe(14);
+    expect(d.cached_tokens).toBe(6);
+  });
+
+  it('压缩的错误响应：error 列与 resp_raw 是上游明文，不是压缩乱码', async () => {
+    const { res, d } = await chat('mock-encfail-gzip', true);
+    expect(res.status).toBe(429);
+    expect(d.ok).toBe(false);
+    expect(String(d.error)).toContain('rate limit exceeded');
+    expect(String(d.resp_raw)).toContain('rate_limit_error');
+  });
+
+  it('流式末尾不带 usage：本地估算兜底并打 estimated 标记', async () => {
+    const { d } = await chat('mock-nousage', true);
+    expect(d.total_tokens).toBeGreaterThan(0);
+    expect(d.total_tokens).toBeLessThan(1000);
+    expect(d.tokens_estimated).toBe(true);
+    expect(d.timeline_ms?.ttft_source).toBe('token');
   });
 });
 

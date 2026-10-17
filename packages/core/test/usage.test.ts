@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractUsage, frameHasToken, SseUsageStreamParser, mergeUsage } from '../src/proxy/usage.js';
+import { extractUsage, frameHasToken, frameText, SseUsageStreamParser, mergeUsage } from '../src/proxy/usage.js';
 
 describe('extractUsage', () => {
   it('非流式 usage + cached_tokens', () => {
@@ -64,5 +64,26 @@ describe('frameHasToken（TTFT 首 token 判定）', () => {
     p.flush();
     expect(seen).toEqual([2, 3]); // 第 3、4 帧（role 帧与 progress 帧被跳过）
     expect(idx).toBe(4);
+  });
+});
+
+describe('frameText（上游不带 usage 时的估算素材）', () => {
+  it('累计 content / reasoning / completions 方言的 text，role 帧与 usage 帧贡献 0', () => {
+    let text = '';
+    const p = new SseUsageStreamParser((frame) => {
+      text += frameText(frame);
+    });
+    p.feed('data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n');
+    p.feed('data: {"choices":[{"delta":{"content":"你好"}}]}\n\n');
+    p.feed('data: {"choices":[{"delta":{"reasoning_content":"想一想"}}]}\n\n');
+    p.feed('data: {"choices":[{"text":" 以及 completions 方言"}]}\n\n');
+    p.feed('data: {"choices":[],"usage":{"total_tokens":9}}\n\n');
+    p.feed('data: [DONE]\n\n');
+    expect(text).toBe('你好想一想 以及 completions 方言');
+  });
+  it('非对象帧 / 缺 choices / 数组里混 null 都不炸', () => {
+    expect(frameText(null)).toBe('');
+    expect(frameText({})).toBe('');
+    expect(frameText({ choices: [null, { delta: { content: 'x' } }] })).toBe('x');
   });
 });

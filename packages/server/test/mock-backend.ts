@@ -1,6 +1,7 @@
 import http from 'node:http';
 import net from 'node:net';
 import { AddressInfo } from 'node:net';
+import { brotliCompressSync, gzipSync, zstdCompressSync } from 'node:zlib';
 
 /**
  * 可编程 mock OpenAI 后端（design.md §11）：
@@ -8,6 +9,8 @@ import { AddressInfo } from 'node:net';
  * - /v1/embeddings
  * - /v1/audio/transcriptions（multipart）
  * - /v1/audio/speech（二进制流）
+ * - model=mock-enc-{gzip,br,zstd}：压缩响应（远端 API 按 accept-encoding 回包的形态）；
+ *   mock-encfail-gzip：压缩的 429 错误体；mock-nousage：流式末尾不带 usage
  * - /health
  * - /slow?ms= 慢响应；/fail 返回 500；/stall 卡死
  */
@@ -89,6 +92,62 @@ export async function startMockBackend(): Promise<MockBackend> {
           res.writeHead(500, { 'content-type': 'application/json' }).end(
             JSON.stringify({ error: { message: 'CUDA out of memory', type: 'server_error', code: 'oom' } }),
           );
+          return;
+        }
+        // 压缩响应：远端 API（DeepSeek/Venice 等）按客户端 accept-encoding 回 gzip/br/zstd。
+        // 旁路观察必须先解出明文，否则 usage / TTFT / 错误响应头部集体落空
+        // （回归：远程转发后端的请求明细里 tokens 全空、pp/tg 无数）。
+        const enc = /^(?:mock-enc|mock-encfail)-(gzip|br|zstd)$/.exec(String(json.model ?? ''))?.[1] as
+          | 'gzip'
+          | 'br'
+          | 'zstd'
+          | undefined;
+        if (enc) {
+          const compress = enc === 'gzip' ? gzipSync : enc === 'br' ? brotliCompressSync : zstdCompressSync;
+          const failing = json.model === 'mock-encfail-gzip';
+          if (json.stream === true && !failing) {
+            const frames = [
+              { id: 'ce1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' } }] },
+              { id: 'ce1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '你好' } }] },
+              { id: 'ce1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '世界' } }] },
+              {
+                id: 'ce1', object: 'chat.completion.chunk', choices: [],
+                usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_tokens_details: { cached_tokens: 6 } },
+              },
+            ];
+            const sse = frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('') + 'data: [DONE]\n\n';
+            const packed = compress(Buffer.from(sse, 'utf8'));
+            res.writeHead(200, {
+              'content-type': 'text/event-stream', 'content-encoding': enc, 'cache-control': 'no-cache',
+            });
+            // 分两块下发：解码必须是增量的，不能等整包收齐
+            const half = Math.floor(packed.length / 2);
+            res.write(packed.subarray(0, half));
+            setTimeout(() => res.end(packed.subarray(half)), 20);
+            return;
+          }
+          const payload = failing
+            ? { error: { message: 'rate limit exceeded', type: 'rate_limit_error', code: 'overloaded' } }
+            : {
+                id: 'cmpl-enc', object: 'chat.completion',
+                choices: [{ index: 0, message: { role: 'assistant', content: '你好世界' }, finish_reason: 'stop' }],
+                usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_tokens_details: { cached_tokens: 6 } },
+              };
+          const packed = compress(Buffer.from(JSON.stringify(payload), 'utf8'));
+          res.writeHead(failing ? 429 : 200, { 'content-type': 'application/json', 'content-encoding': enc });
+          res.end(packed);
+          return;
+        }
+        // 流式末尾不带 usage（客户端没声明 stream_options.include_usage 的常见形态）：
+        // 走本地估算兜底，并打 tokens_estimated 标记
+        if (json.model === 'mock-nousage' && json.stream === true) {
+          const frames = [
+            { id: 'nu1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant' } }] },
+            { id: 'nu1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '你好' } }] },
+            { id: 'nu1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: '世界' } }] },
+          ];
+          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+          res.end(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('') + 'data: [DONE]\n\n');
           return;
         }
         if (json.stream === true) {

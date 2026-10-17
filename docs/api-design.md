@@ -355,5 +355,6 @@
 
 - 目标：`openai` Python/Node SDK 仅改 `base_url` + `api_key` + `model` 即可用。
 - 流式遵循 OpenAI SSE 帧格式（`data: {chunk}\n\n` … `data: [DONE]\n\n`），网关不改写帧内容。
-- `usage` 依赖上游遵循 `stream_options.include_usage`；不支持的上游走本地估算并打 `tokens_estimated` 标记。
+- `usage` 依赖上游遵循 `stream_options.include_usage`；上游不带 usage 时走本地估算（流式对累计的增量文本编码 completion tokens）并打 `tokens_estimated` 标记。
+- 上游回 `gzip/deflate/br/zstd` 压缩响应（远端 API 的常态）时，网关只为统计解一份明文，转发给客户端的字节流与 `content-encoding` 头原样保留，由客户端自行解压；`resp_bytes` 记压缩后的线上字节数。
 - 扩展字段（`context_length`、`X-Aya-Request-Id`、`/api/v1/*`）均为增量，不影响标准 OpenAI 客户端。

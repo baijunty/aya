@@ -9,6 +9,7 @@ import {
   SseUsageStreamParser,
   extractUsage,
   frameHasToken,
+  frameText,
   newRequestId,
   upstreamAuthOverrides,
   type BackendConfig,
@@ -24,7 +25,8 @@ import type { VoiceStore } from '../voices/store.js';
 import { logger } from '../log.js';
 import type { PeekedRequest } from './peek.js';
 import { sanitizeRaw } from './peek.js';
-import { estimateTokens } from './estimate.js';
+import { createPlainFeeder } from './decode.js';
+import { estimateStreamTokens, estimateTokens } from './estimate.js';
 
 export interface ForwardContext {
   endpoint: string; // chat | completion | embedding | image | asr | tts
@@ -46,6 +48,10 @@ const HOP_BY_HOP = new Set([
 
 /** 转发响应头白名单（其余透传） */
 const DROP_RESP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length']);
+
+/** 旁路观察的缓冲上限（字符）：非流式 JSON 响应体 / 流式增量文本，够解析 usage 与估算即可 */
+const JSON_OBS_MAX = 1_000_000;
+const STREAM_TEXT_MAX = 1_000_000;
 
 /**
  * 核心转发：透传请求体流 → 上游；响应按类型分流回传（SSE/二进制/JSON）。
@@ -80,11 +86,14 @@ export async function forward(
   let backendMs = 0;
   let backendTtfb = 0;
   let tokensEstimated = false;
+  /** 流式增量文本（上游不带 usage 时的估算素材） */
+  let streamText = '';
   // 失败排障：请求体头部（peek 阶段捕获）+ 上游错误响应头部（observer 捕获）
   const rawCfg = ctx.proxyCfg.log_raw_on_error ? ctx.proxyCfg.raw_log_max_bytes : 0;
   let reqRaw = rawCfg ? peeked.rawHead : undefined;
   let respRaw: string | undefined;
-  const respHead: Buffer[] = [];
+  /** 错误响应头部：取「解码后的明文」，压缩响应才不会存成一团乱码 */
+  const respHead: string[] = [];
   let respHeadSize = 0;
 
   const finish = (code: number, err?: string): void => {
@@ -209,12 +218,47 @@ export async function forward(
     // 4. 旁路观察：usage / TTFT / 字节计数，不改写字节流
     // TTFT 必须落在首个「带 token 的帧」上：上游（gufo/llama.cpp 系）会先 flush 响应头 +
     // role-only 起始帧，空闲期还有 `: ping` 注释心跳，按首字节计时会把 prefill 算成 ~0。
+    const isErrResp = statusCode >= 400;
+    let jsonBuf = '';
     const sseParser = new SseUsageStreamParser((frame) => {
       if (firstTokenMs === undefined && frameHasToken(frame)) firstTokenMs = Date.now() - tsStart;
+      if (streamText.length < STREAM_TEXT_MAX) streamText += frameText(frame);
     });
-    let jsonBuf = '';
+    // 压缩响应先解一份明文再解析：undici.request 不解压（只有 fetch 会），而远端 API 基本都按
+    // 客户端 accept-encoding 回 gzip/br/zstd——直接喂压缩字节，SSE/JSON 一帧也解不出来，
+    // tokens、TTFT、上游错误信息会集体落空。转发给客户端的仍是原始字节。
+    const feeder = createPlainFeeder(respHeaders['content-encoding'], (text) => {
+      if (respCt.includes('text/event-stream')) {
+        sseParser.feed(text);
+      } else if (respCt.includes('application/json') && jsonBuf.length < JSON_OBS_MAX) {
+        jsonBuf += text;
+      }
+      if (rawCfg && isErrResp && respHeadSize < rawCfg) {
+        respHead.push(text);
+        respHeadSize += text.length;
+      }
+    });
     let firstByte = true;
-    const isErrResp = statusCode >= 400;
+
+    /** 观察收尾：固化 usage 与错误响应头部（幂等：flush 与 finally 各会调一次） */
+    let obsFinalized = false;
+    const finalizeObservation = (): void => {
+      if (obsFinalized) return;
+      obsFinalized = true;
+      sseParser.flush();
+      usage = sseParser.usage;
+      if (rawCfg && isErrResp && !respRaw && respHeadSize > 0) {
+        respRaw = sanitizeRaw(respHead.join('').slice(0, rawCfg));
+      }
+      if (!usage && jsonBuf) {
+        try {
+          usage = extractUsage(JSON.parse(jsonBuf));
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
     const observer = new Transform({
       transform(chunk: Buffer, _enc, cb) {
         if (firstByte) {
@@ -222,31 +266,21 @@ export async function forward(
           firstByte = false;
         }
         respBytes += chunk.length;
-        if (rawCfg && isErrResp && respHeadSize < rawCfg) {
-          respHead.push(chunk);
-          respHeadSize += chunk.length;
-        }
-        if (respCt.includes('text/event-stream')) {
-          sseParser.feed(chunk.toString('utf8'));
-        } else if (respCt.includes('application/json') && jsonBuf.length < 1_000_000) {
-          jsonBuf += chunk.toString('utf8');
-        }
+        feeder.write(chunk);
         cb(null, chunk);
       },
       flush(cb) {
-        sseParser.flush();
-        usage = sseParser.usage;
-        if (rawCfg && isErrResp && respHeadSize > 0) {
-          respRaw = sanitizeRaw(Buffer.concat(respHead).toString('utf8').slice(0, rawCfg));
-        }
-        if (!usage && jsonBuf) {
-          try {
-            usage = extractUsage(JSON.parse(jsonBuf));
-          } catch {
-            /* ignore */
-          }
-        }
-        cb();
+        // 解码是异步的：等明文全部吐出来再固化 usage，否则末尾的 usage chunk 会漏
+        feeder.finish().then(
+          () => {
+            finalizeObservation();
+            cb();
+          },
+          () => {
+            finalizeObservation();
+            cb();
+          },
+        );
       },
     });
 
@@ -273,15 +307,16 @@ export async function forward(
     } finally {
       reply.raw.off('close', clientAbort);
       backendMs = Date.now() - tBackend0;
-      // pipeline 中途出错时 flush 可能未执行：兜底固化已捕获的错误响应头部
-      if (rawCfg && isErrResp && !respRaw && respHeadSize > 0) {
-        respRaw = sanitizeRaw(Buffer.concat(respHead).toString('utf8').slice(0, rawCfg));
-      }
+      // pipeline 中途出错（客户端断开、上游 stall）时 flush 不会执行：
+      // 这里把解码收尾补齐，已收到的 usage / 错误响应头部不至于整段丢掉
+      await feeder.finish();
+      finalizeObservation();
     }
 
-    // 5. 无 usage 时本地估算兜底（chat/completion）
+    // 5. 无 usage 时本地估算兜底（chat/completion）：非流式读响应 JSON，
+    // 流式用累计下来的增量文本（上游不带 stream_options.include_usage 时末尾就没有 usage）
     if (!usage?.total_tokens && (endpoint === 'chat' || endpoint === 'completion') && statusCode === 200) {
-      const est = estimateTokens(jsonBuf);
+      const est = isStream ? estimateStreamTokens(streamText) : estimateTokens(jsonBuf);
       if (est) {
         usage = est.usage;
         tokensEstimated = true;
@@ -289,7 +324,7 @@ export async function forward(
     }
     // 上游返回 4xx/5xx：error 列提取上游错误信息（列表页直接可读）
     if (statusCode >= 400 && !errorMsg) {
-      errorMsg = upstreamErrorBrief(jsonBuf, statusCode);
+      errorMsg = upstreamErrorBrief(jsonBuf || respRaw || '', statusCode);
     }
     finish(statusCode, errorMsg);
   } catch (err) {
