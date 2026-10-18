@@ -122,7 +122,8 @@ interface ModelConfig {
   name: string;
   aliases?: string[];
   backend: string;
-  kind: 'chat'|'completion'|'embedding'|'image'|'asr'|'tts';
+  kind: 'chat'|'completion'|'embedding'|'image'|'asr'|'tts'|'decision';
+  input_modalities?: string[];      // /v1/models architecture 覆盖（如多模态决策模型）
   context_length?: number;
   max_tokens?: number;
   enabled: boolean;
@@ -277,6 +278,7 @@ lease.release(): inflight--; lastActivityAt = now; 唤醒队首
 主机为**统一内存**架构：CPU 与 GPU 共用同一内存池，llama.cpp、strata、gufo 等后端（含其 GPU 加速）都在同一池内分配，因此**只判定系统内存，不单独探测显存**。
 
 - 数据源：`os.totalmem()` / `os.freemem()`（Linux 上取自 `/proc/meminfo` 的 `MemTotal` / `MemAvailable`——含可回收缓存，与 OOM 规避口径一致）。
+- **进程驻留采样**：准入/驱逐每轮顺带读各 ready 后端**进程树**（主进程 + 全部子进程：PPID 子树 ∪ 同进程组，与停止时 killGroup 口径一致）的 `/proc/<pid>/smaps_rollup` 并跨树求和（Pss 已把共享页按份额分摊，求和不重复计数；不可得时退化 `VmRSS` 保守计）。托管后端多为「启动脚本 + 引擎子进程」结构，内存大头在子进程，只算主进程会严重低估。MemAvailable 把 mmap 权重页计为「可回收」，文件页部分须显式扣回，防同一物理页被重复许诺。
 - `ResourceProbe` 每 `probe_interval_ms`（默认 5s）刷新 `ResourceSnapshot`，同时供 `GET /api/v1/resources` 与前端内存面板展示。
 - 预留扩展：快照与准入按「多维度资源」接口书写，日后若加入独立显存的异构卡，只需挂一个 gpu 维度 probe，主流程不动。
 
@@ -285,15 +287,25 @@ lease.release(): inflight--; lastActivityAt = now; 唤醒队首
 **一切进程启动入口**（主动 load、请求触发 auto_start、崩溃重启）统一经 `ResourceManager.acquireLoadPermit(backend)`：
 
 ```
+串行加载锁（process/remote 型；cli 型不持锁，其防超卖由预留记账保证）：
+  同一时刻只允许一个后端处于「permit → ready/失败」加载窗口。
+  同时刻各自过检 ≠ 可并行加载——并行加载的瞬时峰值（权重暂存、pack 转换等）
+  不在声明值内，合计仍可能 OOM；后到者排队，待前序加载完毕后重新估算内存再准入
+
 required  = backend.required_memory.mem_mb + safety_margin_mb
-available = snapshot.mem_free_mb − reserved_total      # 预留记账
+reserved_effective = Σ ( running 后端 : 实测文件页驻留
+                       | reserved/starting 后端 : 声明 required )   # 及时口径
+available = snapshot.mem_free_mb − reserved_effective
 fit       = available ≥ required
 
 fit → 发放 permit，required 计入 reserved（并发 load 不会双双通过检查后合计 OOM）
-      进程 ready 后预留转为「运行占用」，进程停止时释放
+      进程 ready 后预留转为「运行占用」——改按实测驻留计（声明值不再重复扣减，
+      匿名占用已被 MemAvailable 自然排除，只扣其文件页驻留），进程停止时释放
 !fit → 进入驱逐流程
 ```
 
+- **串行加载**：全局加载锁 FIFO 排队，持锁范围 = permit 获取 → `markRunning`（ready）或 `release`（失败/停止）；等锁期间 LoadOp 保持 `admitting`，超过 `evict_wait_timeout` 返回 503 并注明当前加载中的后端。拿到锁后每轮都用最新快照 + 实测驻留重新判定，绝不按到达时的旧余量放行。
+- **及时内存语义**：模型加载完毕后，其占用以实测驻留为准参与准入；声明值只在「尚未变成真实占用」的 reserved/starting 窗口内起预留作用。大模型半载时小后端可直接共存，满载驻留涨上来后准入自然收紧。
 - **预留记账**是并发安全的关键：两个模型同时 load，各自检查时都「刚好够」，合计必 OOM；permit 未释放前第二个检查会看到 `reserved` 扣减。
 - 崩溃重启同样过准入；拿不到 permit 则**保持 stopped** 并记事件 `restart_deferred_resource`，等下次请求或 load 再试——避免崩溃循环撞 OOM。
 
@@ -307,7 +319,8 @@ candidates = { rt | rt.state==ready && cfg.evictable && rt.name != target }
 排序：priority 升序 → lastActivityAt 升序（低优先级、闲置最久者先牺牲）
 
 loop（每 probe_interval 重查快照）:
-  依序累加候选为 victims，模拟释放其占用后重算 fit
+  依序累加候选为 victims，模拟释放其占用（实测驻留总量：匿名页归还 MemAvailable
+  + 文件页扣减解除；缺省回退声明值）后重算 fit
   fit 后逐个执行：等待 victim 闲置（in-flight 自然归零，不打断）→ stop('evict') → 释放其占用
   victims 全部停止且 fit → 发放 permit → LoadOp 进入 starting
   now > deadline(evict_wait_timeout) → 放弃：不再新增 victims，

@@ -70,6 +70,16 @@ describe('eviction', () => {
     expect(selectEvictCandidates(backends, 'target', false)).toHaveLength(0);
     expect(selectEvictCandidates(backends, 'target', true)).toHaveLength(1);
   });
+  it('resident_mb 覆盖声明值作为可释放量（实测驻留口径）', () => {
+    const cands = selectEvictCandidates(
+      [{ cfg: low, rt: rt({ name: 'low' }), resident_mb: 1234 }],
+      'target', true,
+    );
+    expect(cands[0].release_mb).toBe(1234);
+    // 未提供实测值时回退声明值
+    const fallback = selectEvictCandidates([{ cfg: low, rt: rt({ name: 'low' }) }], 'target', true);
+    expect(fallback[0].release_mb).toBe(8000);
+  });
   it('planEviction 依序累加至 fit', () => {
     const admission = checkAdmission({
       snapshot: snap, reserved: new Map(), target: b({ name: 'target', required_memory: { mem_mb: 16384 } }), safetyMarginMb: 1024,

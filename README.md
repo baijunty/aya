@@ -7,9 +7,10 @@
 ## 特性
 
 - **OpenAI 兼容转发**：`/v1/chat/completions`（含 SSE 流式）、`/v1/completions`、`/v1/embeddings`、`/v1/images/generations`、`/v1/images/edits`（参考图 multipart 或 JSON base64，经 `{ref_image}` 占位符注入 CLI 后端如 sd-cli `-r`）、`/v1/audio/transcriptions`（multipart 流式）、`/v1/audio/speech`（二进制流透传）。请求体流式透传不缓冲，OpenAI SDK 只改 `base_url` + `model` 即可使用。
+- **决策模型（System One）**：`/v1/systemone`（llama.cpp TypeSafe-compatible System One API）——`kind: decision` 模型对 `state` 回答 `choice`/`score`/`noul` 类型题，返回概率化决策（`answers` + `usage.input_tokens`），支持 `images`/`files` 图片输入（需 mmproj）；`/v1/models` 的 `architecture.output_modalities` 含 `decisions` 供客户端识别。
 - **后端进程托管**：配置命令拉起 llama.cpp / vLLM / 任意自带 OpenAI API 的推理进程；健康检查、按需冷启动、闲置超时优雅卸载（杀进程组确保内存释放）、崩溃退避重启、并发闸门与排队。
 - **纯转发上游（passthrough）**：把远程 OpenAI 兼容 API（如 `http://127.0.0.1:8731/v1`）直接挂为后端——不托管进程、不做健康探测，恒可服务，上游不可达快速失败。上游 api key 三种配法：`api_key: "sk-xxx"` 注入 Bearer（独立于网关自身 `api_keys`，可不同）；或 `auth` 显式头；或都不配——原样透传客户端的 Authorization（上游 key 同自身设置）。
-- **资源感知加载（防 OOM）**：统一内存主机只判定系统内存（MemAvailable）；一切进程启动前做准入检查 + 并发预留记账；内存不足时按「低优先级 → 闲置最久」选择驱逐候选，等待其闲置后卸载腾挪；超时返回 503 `resource_unavailable` 附阻塞详情，绝不赌一把启动。
+- **资源感知加载（防 OOM）**：统一内存主机只判定系统内存（MemAvailable），按**及时内存情况**准入——运行中后端按进程树（含子进程）实测驻留（`/proc/<pid>/smaps_rollup` 跨树求和）参与扣减，声明值仅作加载窗口预留；一切进程启动前做准入检查 + 并发预留记账；加载**严格串行**（同一时刻只加载一个引擎，后到者等前序加载完毕重新估算，防并行瞬时峰值合计 OOM）；内存不足时按「低优先级 → 闲置最久」选择驱逐候选，等待其闲置后卸载腾挪；超时返回 503 `resource_unavailable` 附阻塞详情，绝不赌一把启动。
 - **模型主动加载/卸载**：`POST /api/v1/models/{name}/load|unload`，支持同步等待与任务状态查询。
 - **日志与统计**：每请求落库（TTFT、延迟、token、缓存命中、时间线），SQLite 存储 + 异步批量写入；聚合统计 API + 内置 React 看板（总览/趋势/明细下钻/后端状态与内存面板，顶栏统一自动刷新 5s/10s/30s/60s/关）。
 - **运维**：API Key 鉴权（key 短哈希脱敏）、看板登录（`server.ui_auth` 用户名密码 + HttpOnly 会话 Cookie，与 API Key 并存任一放行）、配置热加载、结构化日志、`/healthz`；后端 stdout/stderr 归档按 `logs` 策略增长（默认按天切 + 保留 3 天 + 单文件 20MB 截断，可 `mode: run` 只留本次运行）。

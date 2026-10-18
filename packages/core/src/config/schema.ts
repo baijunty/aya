@@ -127,7 +127,9 @@ export const modelSchema = z.object({
   name: z.string().min(1),
   aliases: z.array(z.string()).optional(),
   backend: z.string().min(1),
-  kind: z.enum(['chat', 'completion', 'embedding', 'image', 'asr', 'tts']),
+  kind: z.enum(['chat', 'completion', 'embedding', 'image', 'asr', 'tts', 'decision']),
+  /** /v1/models architecture.input_modalities 覆盖（如多模态决策模型 ["text","image"]）；缺省按 kind 默认 */
+  input_modalities: z.array(z.string().min(1)).optional(),
   context_length: z.number().int().positive().optional(),
   max_tokens: z.number().int().positive().optional(),
   enabled: boolDefault(true),

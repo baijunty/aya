@@ -54,15 +54,18 @@ export function Backends() {
               <div className="bar-fill" style={{ width: `${(res.mem.free_mb / res.mem.total_mb) * 100}%`, background: 'var(--green)' }} />
             </div>
           </div>
-          {res.reserved.map((r) => (
-            <div key={r.backend} className="bar-row">
-              <span className="muted" style={{ width: 120 }}>{r.backend}</span>
-              <div className="bar-track">
-                <div className="bar-fill" style={{ width: `${(r.mem_mb / res.mem.total_mb) * 100}%` }} />
+          {res.reserved.map((r) => {
+            const shown = r.live_mb ?? r.mem_mb;
+            return (
+              <div key={r.backend} className="bar-row">
+                <span className="muted" style={{ width: 120 }}>{r.backend}</span>
+                <div className="bar-track">
+                  <div className="bar-fill" style={{ width: `${(shown / res.mem.total_mb) * 100}%` }} />
+                </div>
+                <span className="muted">{fmtMb(shown)} ({r.phase})</span>
               </div>
-              <span className="muted">{fmtMb(r.mem_mb)} ({r.phase})</span>
-            </div>
-          ))}
+            );
+          })}
           {res.load_ops.map((op) => (
             <div key={op.backend} className="muted" style={{ marginTop: 6 }}>
               ⏳ {op.backend} 加载中（{op.state}）

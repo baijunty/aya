@@ -6,7 +6,11 @@
  * passthrough = 纯转发上游（远程 OpenAI 兼容 API）：不托管进程、不做健康探测，恒可服务。
  */
 export type BackendType = 'process' | 'remote' | 'cli' | 'passthrough';
-export type ModelKind = 'chat' | 'completion' | 'embedding' | 'image' | 'asr' | 'tts';
+/**
+ * decision = 原生决策模型（llama.cpp `POST /v1/systemone`，TypeSafe System One API）：
+ * 对 state 回答带类型的题（choice/score/noul），只出概率化决策，不做文本生成。
+ */
+export type ModelKind = 'chat' | 'completion' | 'embedding' | 'image' | 'asr' | 'tts' | 'decision';
 
 export interface HealthCheckConfig {
   path: string;
@@ -70,6 +74,8 @@ export interface ModelConfig {
   aliases?: string[];
   backend: string;
   kind: ModelKind;
+  /** /v1/models architecture.input_modalities 覆盖；缺省按 kind 默认 */
+  input_modalities?: string[];
   context_length?: number;
   max_tokens?: number;
   enabled: boolean;

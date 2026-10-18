@@ -88,6 +88,34 @@ backends:
     idle_timeout: 10m
     required_memory: { mem_mb: 2048 }
 
+  # llama.cpp 原生决策模型示例（kind: decision，只接 POST /v1/systemone）：
+  # 对 state 回答 choice/score/noul 类型题，返回概率化决策；带 mmproj 即支持图片输入。
+  # 需 llama-server 支持 /v1/systemone（GET /v1/models 的 architecture.output_modalities 含 decisions）
+  - name: d1-llamacpp
+    type: process
+    command: path/to/llama-server
+    args:
+      - --model
+      - path/to/models/d1-3b/d1-3B-Q8_0.gguf
+      - --mmproj
+      - path/to/models/d1-3b/mmproj-d1-3B-BF16.gguf
+      - --ctx-size
+      - "8192"
+      - -ub
+      - "4096"
+      - -ngl
+      - all
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8107"
+      - --no-webui
+    base_url: "http://127.0.0.1:8107/v1"
+    health_check: { path: /health, interval: 1s }
+    start_timeout: 120s
+    idle_timeout: 10m
+    required_memory: { mem_mb: 5120 }
+
   # 远程型：已运行的 OpenAI 兼容服务（网关不管理进程）
   - name: tts-remote
     type: remote
@@ -238,7 +266,7 @@ models:
   - name: qwen2.5-7b-instruct
     aliases: ["gpt-4o-mini"]    # 现有客户端无缝接入
     backend: qwen-vllm
-    kind: chat                  # chat | completion | embedding | image | asr | tts
+    kind: chat                  # chat | completion | embedding | image | asr | tts | decision
     context_length: 32768
   - name: qwen2.5-0.5b
     backend: qwen-llamacpp
@@ -259,3 +287,8 @@ models:
   - name: gpt-4o                # 纯转发上游：客户端 model=gpt-4o → 上游收到同名 model
     backend: openai-upstream
     kind: chat
+  - name: d1-3b                 # 原生决策模型：只接 POST /v1/systemone（choice/score/noul 概率化决策）
+    backend: d1-llamacpp
+    kind: decision
+    input_modalities: ["text", "image"]   # /v1/models architecture 覆盖（多模态决策模型）
+    context_length: 8192

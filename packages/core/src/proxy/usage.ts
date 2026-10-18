@@ -15,9 +15,11 @@ export function extractUsage(obj: unknown): Usage | undefined {
     typeof v === 'number' && Number.isFinite(v) ? v : undefined;
   const details = u.prompt_tokens_details as Record<string, unknown> | undefined;
   const out: Usage = {};
-  const p = num(u.prompt_tokens);
-  const c = num(u.completion_tokens);
-  const t = num(u.total_tokens);
+  // /v1/systemone 的 usage 用 input_tokens/output_tokens（output 恒 0，决策不产 token）：
+  // 缺 prompt/completion 时按该方言补齐，total 随之推算
+  const p = num(u.prompt_tokens) ?? num(u.input_tokens);
+  const c = num(u.completion_tokens) ?? num(u.output_tokens);
+  const t = num(u.total_tokens) ?? (p !== undefined || c !== undefined ? (p ?? 0) + (c ?? 0) : undefined);
   const cached = num(details?.cached_tokens);
   if (p !== undefined) out.prompt_tokens = p;
   if (c !== undefined) out.completion_tokens = c;

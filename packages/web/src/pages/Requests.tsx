@@ -156,7 +156,7 @@ export function Requests() {
         <input type="text" placeholder="模型过滤" value={model} onChange={(e) => { setModel(e.target.value); setPage(1); }} />
         <select value={endpoint} onChange={(e) => { setEndpoint(e.target.value); setPage(1); }}>
           <option value="">全部端点</option>
-          {['chat', 'completion', 'embedding', 'image', 'asr', 'tts'].map((e) => (
+          {['chat', 'completion', 'embedding', 'image', 'asr', 'tts', 'systemone'].map((e) => (
             <option key={e} value={e}>{e}</option>
           ))}
         </select>

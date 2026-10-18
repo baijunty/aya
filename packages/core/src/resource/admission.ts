@@ -8,7 +8,11 @@ export function requiredMemMb(cfg: BackendConfig, safetyMarginMb: number): numbe
 
 export interface AdmissionInput {
   snapshot: ResourceSnapshot;
-  /** 已预留记账（backend → mem_mb） */
+  /**
+   * 有效占用记账（backend → mem_mb）：
+   * running 后端为实测驻留（文件页+shmem，由调用方采样），reserved/starting 为声明值。
+   * MemAvailable 已排除匿名占用，但把 mmap 权重页计为「可回收」，故只需扣文件页部分。
+   */
   reserved: Map<string, number>;
   target: BackendConfig;
   safetyMarginMb: number;
@@ -39,7 +43,7 @@ export function checkAdmission(input: AdmissionInput): AdmissionResult {
 
 export interface EvictCandidate {
   name: string;
-  /** 卸载后可释放的内存（声明值；未声明按 0 计，仅作为腾挪顺序参考） */
+  /** 卸载后可释放的内存（实测驻留总量，缺省按声明值；仅作为腾挪顺序参考） */
   release_mb: number;
   busy: boolean;
   priority: number;
@@ -50,14 +54,15 @@ export interface EvictCandidate {
  * 驱逐候选排序（design.md §4.7.3）：
  * 仅 ready && evictable && 非目标；allow_evict_busy=false 时再要求非忙。
  * 排序：priority 升序 → lastActivityAt 升序（低优先级、闲置最久者先牺牲）。
+ * 卸载可释放量优先用调用方传入的实测驻留 resident_mb，缺省回退声明值。
  */
 export function selectEvictCandidates(
-  backends: Array<{ cfg: BackendConfig; rt: BackendRuntime }>,
+  backends: Array<{ cfg: BackendConfig; rt: BackendRuntime; resident_mb?: number }>,
   targetName: string,
   allowEvictBusy: boolean,
 ): EvictCandidate[] {
   const out: EvictCandidate[] = [];
-  for (const { cfg, rt } of backends) {
+  for (const { cfg, rt, resident_mb } of backends) {
     if (cfg.name === targetName) continue;
     if (cfg.type !== 'process') continue;
     if (rt.state !== 'ready') continue;
@@ -66,7 +71,7 @@ export function selectEvictCandidates(
     if (busy && !allowEvictBusy) continue;
     out.push({
       name: cfg.name,
-      release_mb: cfg.required_memory?.mem_mb ?? 0,
+      release_mb: resident_mb ?? cfg.required_memory?.mem_mb ?? 0,
       busy,
       priority: cfg.priority ?? 0,
       lastActivityAt: rt.lastActivityAt,

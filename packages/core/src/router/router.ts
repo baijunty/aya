@@ -9,6 +9,8 @@ const ENDPOINT_KINDS: Record<string, ModelKind[]> = {
   image: ['image'],
   asr: ['asr'],
   tts: ['tts'],
+  // llama.cpp /v1/systemone：仅原生决策模型（architecture.output_modalities 含 decisions）
+  systemone: ['decision'],
 };
 
 export interface ResolvedRoute {

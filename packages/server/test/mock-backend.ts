@@ -197,6 +197,46 @@ export async function startMockBackend(): Promise<MockBackend> {
         );
         return;
       }
+      if (url.pathname === '/v1/systemone') {
+        // llama.cpp System One 语义：questions 必填非空；usage 用 input_tokens/output_tokens 方言
+        const questions = json.questions as Record<string, Record<string, unknown>> | undefined;
+        if (!questions || typeof questions !== 'object' || Object.keys(questions).length === 0) {
+          res.writeHead(400, { 'content-type': 'application/json' }).end(
+            JSON.stringify({ error: { code: 400, message: '"questions" must be a non-empty object', type: 'invalid_request_error' } }),
+          );
+          return;
+        }
+        const answers: Record<string, unknown> = {};
+        for (const [id, q] of Object.entries(questions)) {
+          if (q?.type === 'noul') answers[id] = { type: 'noul', noul: 0.6328 };
+          else if (q?.type === 'score') {
+            const legend = Array.isArray(q.criteria) ? q.criteria : [];
+            answers[id] = {
+              type: 'score', score: (legend.length - 1) / 2,
+              legend: Object.fromEntries(legend.map((l, i) => [String(i), l])),
+              probabilities: Object.fromEntries(legend.map((_, i) => [String(i), 1 / legend.length])),
+              confidence: 0.5,
+            };
+          } else {
+            const opts = Object.keys((q?.criteria ?? {}) as object);
+            answers[id] = {
+              type: 'choice', choice: opts[0] ?? 'a',
+              probabilities: Object.fromEntries(opts.map((o) => [o, 1 / Math.max(opts.length, 1)])),
+              confidence: 0.9,
+            };
+          }
+        }
+        res.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            model: json.model ?? 'mock-decision',
+            answers,
+            usage: { input_tokens: 152, output_tokens: 0 },
+            // 回显上游收到的 Authorization（鉴权断言复用）
+            auth: req.headers['authorization'] ?? null,
+          }),
+        );
+        return;
+      }
       if (url.pathname === '/v1/audio/transcriptions') {
         const ct = String(req.headers['content-type'] ?? '');
         const isMultipart = ct.startsWith('multipart/');

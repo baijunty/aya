@@ -21,6 +21,11 @@ models:
   - name: whisper
     backend: b-asr
     kind: asr
+  - name: d1-3b
+    aliases: ["lfm2-d1"]
+    backend: b-chat
+    kind: decision
+    input_modalities: ["text", "image"]
   - name: disabled-model
     backend: b-chat
     kind: chat
@@ -99,8 +104,19 @@ describe('ModelRouter', () => {
     try { router.route('whisper', 'chat'); expect.unreachable(); }
     catch (e) { expect((e as AyaError).code).toBe('endpoint_kind_mismatch'); }
   });
+  it('systemone 端点：decision 模型可路由，chat 模型不符', () => {
+    const r = router.route('d1-3b', 'systemone');
+    expect(r.model.kind).toBe('decision');
+    expect(r.model.input_modalities).toEqual(['text', 'image']);
+    expect(router.route('lfm2-d1', 'systemone').model.name).toBe('d1-3b');
+    try { router.route('qwen2.5-7b', 'systemone'); expect.unreachable(); }
+    catch (e) { expect((e as AyaError).code).toBe('endpoint_kind_mismatch'); }
+    // 决策模型不做文本生成：chat 端点同样拒绝
+    try { router.route('d1-3b', 'chat'); expect.unreachable(); }
+    catch (e) { expect((e as AyaError).code).toBe('endpoint_kind_mismatch'); }
+  });
   it('listModels 只含启用模型（规范名）', () => {
     const names = router.listModels().map((m) => m.name);
-    expect(names).toEqual(['qwen2.5-7b', 'whisper']);
+    expect(names).toEqual(['qwen2.5-7b', 'whisper', 'd1-3b']);
   });
 });

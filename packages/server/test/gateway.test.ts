@@ -52,6 +52,11 @@ models:
   - name: mock-image
     backend: mock
     kind: image
+  - name: mock-decision
+    aliases: ["d1"]
+    backend: mock
+    kind: decision
+    input_modalities: ["text", "image"]
 `,
   );
   aya = createApp(cfgPath);
@@ -140,6 +145,68 @@ describe('Aya gateway (remote mock backend)', () => {
   it('别名路由：gpt-4o-mini → mock-chat', async () => {
     const res = await post('/v1/chat/completions', { model: 'gpt-4o-mini', messages: [] });
     expect(res.status).toBe(200);
+  });
+
+  it('GET /v1/models architecture：decision 模型 output_modalities 含 decisions', async () => {
+    const res = await fetch(`${base}/v1/models`);
+    const j = await res.json();
+    const d = j.data.find((m: { id: string }) => m.id === 'mock-decision');
+    expect(d.architecture.output_modalities).toEqual(['decisions']);
+    expect(d.architecture.input_modalities).toEqual(['text', 'image']); // 配置覆盖生效
+    const c = j.data.find((m: { id: string }) => m.id === 'mock-chat');
+    expect(c.architecture.output_modalities).toEqual(['text']);
+    expect(c.architecture.input_modalities).toEqual(['text']);
+  });
+
+  it('systemone：决策模型路由 + answers 透传 + input_tokens 落库', async () => {
+    const state = 'Customer message: I was charged twice for my order last week.';
+    const res = await post('/v1/systemone', {
+      model: 'mock-decision',
+      state,
+      questions: {
+        route: { type: 'choice', instructions: 'Which team should handle this?', criteria: { billing: null, shipping: null } },
+        angry: { type: 'noul', instructions: 'Is the customer angry?' },
+        urgency: { type: 'score', instructions: 'How urgent is this?', criteria: ['can wait', 'today', 'right now'] },
+      },
+    });
+    expect(res.status).toBe(200);
+    const j = await res.json();
+    expect(j.answers.route.choice).toBe('billing');
+    expect(j.answers.route.probabilities.billing).toBe(0.5);
+    expect(j.answers.angry.noul).toBeTypeOf('number');
+    expect(j.answers.urgency.legend['2']).toBe('right now');
+    expect(j.usage).toEqual({ input_tokens: 152, output_tokens: 0 });
+    // 落库：systemone 的 input_tokens/output_tokens 方言记入 prompt/completion tokens
+    const id = res.headers.get('x-aya-request-id')!;
+    await new Promise((r) => setTimeout(r, 600));
+    const d = await (await fetch(`${base}/api/v1/stats/requests/${id}`)).json();
+    expect(d.endpoint).toBe('systemone');
+    expect(d.model).toBe('mock-decision');
+    expect(d.is_stream).toBe(false);
+    expect(d.prompt_tokens).toBe(152);
+    expect(d.completion_tokens).toBe(0);
+    expect(d.total_tokens).toBe(152);
+    expect(d.tokens_estimated).toBe(false);
+    expect(d.req_summary.questions_count).toBe(3);
+    expect(d.req_summary.state_chars).toBe(state.length);
+  });
+
+  it('systemone：kind 不符 / 缺 model → 400', async () => {
+    const res = await post('/v1/systemone', {
+      model: 'mock-chat', state: 'x', questions: { a: { type: 'noul', instructions: 'q' } },
+    });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error.code).toBe('endpoint_kind_mismatch');
+    const res2 = await post('/v1/systemone', { state: 'x', questions: { a: { type: 'noul', instructions: 'q' } } });
+    expect(res2.status).toBe(400);
+    expect((await res2.json()).error.code).toBe('missing_model');
+  });
+
+  it('systemone：上游 400（questions 缺失）原样透传', async () => {
+    const res = await post('/v1/systemone', { model: 'mock-decision', state: 'x' });
+    expect(res.status).toBe(400);
+    const j = await res.json();
+    expect(j.error.message).toContain('questions');
   });
 
   it('大请求体也必须带 content-length（不得退化为 chunked，gufo 会 400 malformed request）', async () => {

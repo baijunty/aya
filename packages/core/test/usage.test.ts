@@ -12,6 +12,14 @@ describe('extractUsage', () => {
     expect(extractUsage({ id: 'x' })).toBeUndefined();
     expect(extractUsage(null)).toBeUndefined();
   });
+  it('systemone 方言：input_tokens/output_tokens 映射为 prompt/completion，total 推算', () => {
+    // llama.cpp /v1/systemone：output_tokens 恒 0（决策不产 token）
+    expect(extractUsage({ usage: { input_tokens: 152, output_tokens: 0 } }))
+      .toEqual({ prompt_tokens: 152, completion_tokens: 0, total_tokens: 152 });
+    // 标准字段优先，不被方言覆盖
+    expect(extractUsage({ usage: { prompt_tokens: 9, input_tokens: 152, output_tokens: 0 } }))
+      .toEqual({ prompt_tokens: 9, completion_tokens: 0, total_tokens: 9 });
+  });
   it('mergeUsage 后到覆盖', () => {
     expect(mergeUsage({ prompt_tokens: 1 }, { completion_tokens: 2 })).toEqual({ prompt_tokens: 1, completion_tokens: 2 });
     expect(mergeUsage({ prompt_tokens: 1 }, { prompt_tokens: 5 })).toEqual({ prompt_tokens: 5 });

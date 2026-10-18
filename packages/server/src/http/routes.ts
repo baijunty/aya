@@ -9,6 +9,7 @@ import {
   nowMs,
   type AppConfig,
   type ModelConfig,
+  type ModelKind,
 } from '@aya/core';
 import type { BackendManager } from '../backend/manager.js';
 import type { ResourceManager } from '../resource/manager.js';
@@ -57,6 +58,23 @@ const ENDPOINT_BY_PATH: Record<string, string> = {
   '/v1/audio/transcriptions': 'asr',
   '/v1/audio/translations': 'asr',
   '/v1/audio/speech': 'tts',
+  // llama.cpp TypeSafe-compatible System One API（决策模型，非流式）
+  '/v1/systemone': 'systemone',
+};
+
+/**
+ * /v1/models 的 architecture（llama.cpp 语义）：客户端用
+ * `architecture?.output_modalities?.includes("decisions")` 识别原生决策模型，
+ * 其余值仅为信息性默认（模型可用 input_modalities 配置覆盖，如多模态决策模型）。
+ */
+const ARCH_BY_KIND: Record<ModelKind, { input: string[]; output: string[] }> = {
+  chat: { input: ['text'], output: ['text'] },
+  completion: { input: ['text'], output: ['text'] },
+  embedding: { input: ['text'], output: ['text'] },
+  image: { input: ['text'], output: ['image'] },
+  asr: { input: ['audio'], output: ['text'] },
+  tts: { input: ['text'], output: ['audio'] },
+  decision: { input: ['text'], output: ['decisions'] },
 };
 
 function parseRange(q: Record<string, string | undefined>): { from: number; to: number } {
@@ -269,6 +287,10 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
         object: 'model',
         created: Math.floor(Date.now() / 1000),
         owned_by: 'aya',
+        architecture: {
+          input_modalities: m.input_modalities ?? ARCH_BY_KIND[m.kind].input,
+          output_modalities: ARCH_BY_KIND[m.kind].output,
+        },
         ...(m.context_length ? { context_length: m.context_length } : {}),
       })),
     };
@@ -475,6 +497,7 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
       ts: snap.ts,
       mem: { total_mb: snap.mem_total_mb, free_mb: snap.mem_free_mb },
       reserved: deps.resources.reservedEntries(),
+      loading: deps.resources.loadingBackend(),
       load_ops: deps.resources.activeLoadOps(),
     };
   });

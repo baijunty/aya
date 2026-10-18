@@ -200,6 +200,13 @@ function peekJson(raw: NodeJS.ReadableStream, opts: PeekOptions): Promise<Peeked
         if (typeof parsed.input === 'string') fields.input_chars = (parsed.input as string).length;
         if (Array.isArray(parsed.messages)) fields.messages_count = (parsed.messages as unknown[]).length;
         if (Array.isArray(parsed.input)) fields.input_items = (parsed.input as unknown[]).length;
+        // /v1/systemone 摘要：题数 + state 长度 + 附图数（state/图片可能很大，不记正文）
+        if (parsed.questions && typeof parsed.questions === 'object' && !Array.isArray(parsed.questions)) {
+          fields.questions_count = Object.keys(parsed.questions as object).length;
+        }
+        if (typeof parsed.state === 'string') fields.state_chars = parsed.state.length;
+        if (Array.isArray(parsed.images)) fields.images = parsed.images.length;
+        else if (Array.isArray(parsed.files)) fields.images = (parsed.files as unknown[]).length;
       }
       resolve({
         body: out,

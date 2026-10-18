@@ -37,11 +37,15 @@
   "object": "list",
   "data": [
     { "id": "qwen2.5-7b-instruct", "object": "model", "created": 1700000000, "owned_by": "aya",
+      "architecture": { "input_modalities": ["text"], "output_modalities": ["text"] },
       "context_length": 32768 }
   ]
 }
 ```
 > `context_length` 为扩展字段（若客户端 schema 严格可忽略）。别名不单独列出（`id` 为规范名）。
+> `architecture` 沿用 llama.cpp 语义：原生决策模型 `output_modalities` 含 `"decisions"`，
+> 客户端用 `architecture?.output_modalities?.includes("decisions")` 识别并改走 `/v1/systemone`；
+> `input_modalities` 默认按 kind 推导，模型可用 `input_modalities` 配置覆盖（如多模态决策模型 `["text","image"]`）。
 
 ### A2. `POST /v1/chat/completions` — 聊天补全
 
@@ -118,6 +122,51 @@
 | DELETE | `/v1/audio/voices/{id}` | 删除（连同样本文件） |
 
 样本存 `data/voices/<id>.<ext>`，元数据在 SQLite `voices` 表。`/v1/audio/speech` 的 `voice` 按 id 精确匹配，未命中再按 name（大小写不敏感）；都不存在 → 404 `voice_not_found`。
+
+### A8c. `POST /v1/systemone` — 决策模型（System One）
+
+llama.cpp **TypeSafe-compatible System One API** 透传（非流式）：对 `state` 回答带类型的题，返回概率化决策。仅 `kind: decision` 模型可路由（其余 kind → 400 `endpoint_kind_mismatch`）。
+
+请求体（`model` 必填，网关按其路由；其余字段原样透传上游）：
+
+```json
+{
+  "model": "d1-3b",
+  "state": "Customer message: I was charged twice for my order last week and nobody has replied.",
+  "images": ["data:image/png;base64,..."],
+  "questions": {
+    "route":   { "type": "choice", "instructions": "Which team should handle this?",
+                 "criteria": { "billing": null, "shipping": null, "technical": null } },
+    "angry":   { "type": "noul", "instructions": "Is the customer angry?" },
+    "urgency": { "type": "score", "instructions": "How urgent is this?",
+                 "criteria": ["can wait", "this week", "today", "right now"] }
+  }
+}
+```
+
+- `state`：字符串/对象/数组（非字符串按 JSON 文本给模型）；纯图片提问可为 `null`（lfm2-d1 系）。
+- `images`/`files`：data URL 数组，需模型支持图片且后端加载了 mmproj。
+- `questions[].type`：`choice`（criteria 为选项→描述映射）/ `score`（2~10 级描述数组）/ `noul`（可选 true/false 描述）。
+
+响应（上游原样透传）：
+
+```json
+{
+  "model": "...",
+  "answers": {
+    "route":   { "type": "choice", "choice": "billing",
+                 "probabilities": { "billing": 0.97, "shipping": 0.01, "technical": 0.02 },
+                 "confidence": 0.96 },
+    "angry":   { "type": "noul", "noul": 0.2 },
+    "urgency": { "type": "score", "score": 1.58,
+                 "legend": { "0": "can wait", "1": "this week", "2": "today", "3": "right now" },
+                 "probabilities": { "0": 0.09, "1": 0.43, "2": 0.27, "3": 0.2 }, "confidence": 0.23 }
+  },
+  "usage": { "input_tokens": 152, "output_tokens": 0 }
+}
+```
+
+统计落库：`usage.input_tokens/output_tokens` 方言映射为 `prompt_tokens/completion_tokens`（决策不产 token，completion 恒 0）；`req_summary` 记 `questions_count`、`state_chars`、`images` 数，不记正文。上游错误原样透传（如缺 `questions` → 400）。
 
 ### A9. `GET /healthz` — 健康检查（不鉴权）
 
@@ -227,12 +276,13 @@
 ```json
 { "ts": 1729600000000,
   "mem": { "total_mb": 65536, "free_mb": 24000 },   // free=MemAvailable 语义（统一内存）
-  "reserved": [ { "backend": "qwen-vllm", "mem_mb": 17408, "phase": "running" } ],
+  "reserved": [ { "backend": "qwen-vllm", "mem_mb": 17408, "phase": "running", "live_mb": 16900 } ],
+  "loading": "gufo-14b",
   "load_ops": [ { "backend": "gufo-14b", "state": "evicting",
                   "victims": ["whisper-local"], "waiters": 2, "deadline": 1729600600000 } ] }
 ```
 
-前端「设备内存面板」与「正在等待 xxx 模型闲置卸载」提示的数据源；`free_mb` 基于 MemAvailable（含可回收缓存），与 OOM 规避口径一致。
+前端「设备内存面板」与「正在等待 xxx 模型闲置卸载」提示的数据源；`free_mb` 基于 MemAvailable（含可回收缓存），与 OOM 规避口径一致。`mem_mb` 为记账值（加载窗口=声明值含余量）；`phase=running` 时附 `live_mb` 进程树（含子进程）实测驻留总量——准入按及时口径：running 后端扣进程树实测文件页驻留，驱逐腾挪按实测驻留总量估算。`loading` 为当前持有全局加载锁（正在加载）的后端——加载严格串行，其余加载任务排队等待（`load_ops` 中呈 `admitting`）。
 
 ### B2. 统计概览
 

@@ -113,7 +113,8 @@ export interface RequestRow {
 export interface ResourceInfo {
   ts: number;
   mem: { total_mb: number; free_mb: number };
-  reserved: Array<{ backend: string; mem_mb: number; phase: string }>;
+  reserved: Array<{ backend: string; mem_mb: number; phase: string; live_mb?: number }>;
+  loading?: string;
   load_ops: Array<{ backend: string; state: string; victims: string[]; waiters: number }>;
 }
 
