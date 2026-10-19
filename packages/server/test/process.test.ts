@@ -137,6 +137,56 @@ models:
     await aya.shutdown();
   }, 30000);
 
+  it('health_fail 崩溃：进程仍存活（占端口）→ 先收割再回 stopped，重 spawn 不冲突', async () => {
+    const { aya, base } = await boot(
+      head(18703) +
+        `
+backends:
+  - name: stalled
+    type: process
+    command: node
+    args: ["{mockScript}", "--port", "18713", "--fail-health-after", "2"]
+    base_url: "http://127.0.0.1:18713/v1"
+    health_check: { path: /health, interval: 200ms, fail_threshold: 1 }
+    start_timeout: 15s
+    stop_grace_period: 3s
+    idle_timeout: 0
+models:
+  - { name: schat, backend: stalled, kind: chat }
+`,
+    );
+    await fetch(`${base}/api/v1/models/schat/load`, { method: 'POST' });
+    // 等 ready 并记下 pid
+    let pid = 0;
+    for (let i = 0; i < 75 && !pid; i++) {
+      const st = await (await fetch(`${base}/api/v1/backends`)).json();
+      if (st.backends[0].state === 'ready') pid = st.backends[0].pid ?? 0;
+      else await sleep(200);
+    }
+    expect(pid).toBeGreaterThan(0);
+    // /health 持续 503 但进程不自杀 → crashed → 收割 → stopped
+    let state = '';
+    for (let i = 0; i < 100; i++) {
+      const st = await (await fetch(`${base}/api/v1/backends`)).json();
+      state = st.backends[0].state;
+      if (state === 'stopped') break;
+      await sleep(200);
+    }
+    expect(state).toBe('stopped');
+    // 进程是被收割的（mock 不会自杀）：pid 已不存在，端口已释放
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    expect(alive).toBe(false);
+    // 新实例能干净拉起并应答（旧进程若未收割会端口冲突 → 503）
+    const res = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'schat', messages: [] }),
+    });
+    expect(res.status).toBe(200);
+    await aya.shutdown();
+  }, 30000);
+
   it('load/unload API：主动加载与卸载', async () => {
     const { aya, base } = await boot(head(18703) + procBackend(18713));
     const r1 = await fetch(`${base}/api/v1/models/pchat/load`, { method: 'POST' });

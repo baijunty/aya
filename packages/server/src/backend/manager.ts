@@ -434,6 +434,22 @@ export class BackendManager {
 
   /** 崩溃处理：有 restart 预算则退避重启（重启同样过准入），否则回到 stopped */
   private async handleCrash(e: BackendEntry, reason: string): Promise<void> {
+    // health_fail 判崩时受管进程可能还活着（如 docker CLI + 容器仍占着端口/资源）：
+    // 必须先收割（TERM 进程组 → 宽限 → KILL）再 reset/重启，否则后续 spawn
+    // 必与存活旧进程端口冲突而反复失败。process_exit 路径 runner 已置 undefined，自然跳过。
+    // intentionalStop 让 onProcessExit 静默返回，避免退出事件重入本函数重复调度。
+    if (e.runner) {
+      logger.warn(
+        { backend: e.cfg.name, reason },
+        'crashed backend process still alive, reaping before reset/restart',
+      );
+      e.intentionalStop = true;
+      try {
+        await e.runner.stop(e.cfg.stop_grace_period_ms);
+      } finally {
+        e.intentionalStop = false;
+      }
+    }
     const restart = e.cfg.restart;
     if (!restart || e.rt.restartAttempts >= restart.max_retries) {
       if (e.rt.state === 'crashed') this.setState(e, 'reset');

@@ -12,6 +12,10 @@ const allocIdx = process.argv.indexOf('--alloc-mb');
 const allocMb = allocIdx >= 0 ? Number(process.argv[allocIdx + 1]) : 0;
 const childAllocIdx = process.argv.indexOf('--child-alloc-mb');
 const childAllocMb = childAllocIdx >= 0 ? Number(process.argv[childAllocIdx + 1]) : 0;
+// 进程存活但 /health 自第 N+1 次起持续 503：模拟引擎卡死（docker CLI/容器还在、端口还占着）
+const failHealthIdx = process.argv.indexOf('--fail-health-after');
+const failHealthAfter = failHealthIdx >= 0 ? Number(process.argv[failHealthIdx + 1]) : Infinity;
+let healthChecks = 0;
 let requests = 0;
 
 // 真实驻留内存（匿名页，触页后才算占用）：供资源准入的实测口径测试。
@@ -57,6 +61,11 @@ const server = http.createServer((req, res) => {
     requests++;
     const url = req.url ?? '/';
     if (url === '/health') {
+      healthChecks++;
+      if (healthChecks > failHealthAfter) {
+        res.writeHead(503).end('{"status":"engine_stalled"}');
+        return;
+      }
       res.writeHead(200).end('{"status":"ok"}');
       if (mode === 'crash' && requests >= 2) {
         // 第二次健康检查后自杀，模拟崩溃
