@@ -1,17 +1,7 @@
 import { useRef, useState } from 'react';
 import { api, type Voice } from '../api';
 import { usePoll } from '../refresh';
-
-function fmtBytes(n?: number): string {
-  if (!n) return '—';
-  if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
-  return n + ' B';
-}
-
-function fmtTime(unixSec: number): string {
-  return new Date(unixSec * 1000).toLocaleString('zh-CN', { hour12: false });
-}
+import { fmtBytes, fmtDateTime } from '../format';
 
 export function Voices() {
   const { data, error, reload } = usePoll(() => api.voices(), [], 30000);
@@ -100,7 +90,7 @@ export function Voices() {
               <tr key={v.id}>
                 <td><b>{v.name}</b></td>
                 <td className="muted">{v.id}</td>
-                <td className="muted">{fmtTime(v.created_at)}</td>
+                <td className="muted">{fmtDateTime(v.created_at * 1000)}</td>
                 <td className="muted">{fmtBytes(v.metadata?.bytes)}</td>
                 <td>
                   <audio controls preload="none" src={api.voiceSampleUrl(v.id)} style={{ height: 30, maxWidth: 260 }} />

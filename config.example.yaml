@@ -262,6 +262,52 @@ backends:
     max_concurrency: 1
     required_memory: { mem_mb: 20480 }
 
+  # MOSS-Image SFT：sd.cpp docs/moss_image.md。
+  # 组件：diffusion 5B DiT + Qwen3.5-9B 文本编码器（--llm）+ FLUX.2 VAE，另需官方 Qwen3.5
+  # tokenizer.json（--tokenizer，必填：Qwen3.5 词表与 sd.cpp 内置 Qwen 词表不同；
+  # 取自 OpenMOSS-Team/MOSS-Image-Base 的 tokenizer/tokenizer.json）。
+  # 默认 cfg 3.0、discrete 调度（flow shift 5）、20 步；宽高需为 16 的倍数。
+  # 仅文生图，不支持参考图编辑，故不配 -r {ref_image}（/v1/images/edits 的参考图会被忽略）。
+  - name: moss-image-sdcpp
+    type: cli
+    command: path/to/sd.cpp/build/bin/sd-cli
+    args:
+      - --diffusion-model
+      - path/to/models/moss-image/moss_image_sft_int8_convrot.safetensors
+      - --vae
+      - path/to/models/moss-image/flux2-vae.safetensors
+      - --llm
+      - path/to/models/moss-image/qwen3.5_9b_int8_convrot.safetensors
+      - --tokenizer
+      - path/to/models/moss-image/tokenizer.json
+      - --cfg-scale
+      - "3.0"
+      - --offload-to-cpu
+      - --mmap
+      - -p
+      - "{prompt}"
+      - -n
+      - "{negative_prompt}"
+      - -W
+      - "{width}"
+      - -H
+      - "{height}"
+      - -s
+      - "{seed}"
+      - -b
+      - "{batch_count}"
+      - -o
+      - "{output_pattern}"
+    env:
+      LD_LIBRARY_PATH: /opt/rocm/lib:/opt/rocm/core/lib:path/to/sd.cpp/build/bin
+      ROCM_PATH: /opt/rocm
+      HIP_PATH: /opt/rocm
+    # 1024x1024 / 20 步约 2~3 分钟；-b n 为单进程串行出图，超时按 n 放宽
+    cli_timeout: 900s
+    fail_on_output: ["no ROCm-capable device is detected", "failed to initialize ROCm"]
+    max_concurrency: 1
+    required_memory: { mem_mb: 20480 }
+
 models:
   - name: qwen2.5-7b-instruct
     aliases: ["gpt-4o-mini"]    # 现有客户端无缝接入
@@ -283,6 +329,10 @@ models:
     kind: image
   - name: qwen-image-turbo      # 8 步蒸馏加速（generations 与 edits 通用）
     backend: qwen-image-sdcpp-turbo
+    kind: image
+  - name: moss-image            # MOSS-Image SFT（文生图；不支持 edits）
+    aliases: ["moss-image-sft"]
+    backend: moss-image-sdcpp
     kind: image
   - name: gpt-4o                # 纯转发上游：客户端 model=gpt-4o → 上游收到同名 model
     backend: openai-upstream

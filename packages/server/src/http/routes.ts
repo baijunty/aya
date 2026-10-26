@@ -13,6 +13,7 @@ import {
 } from '@aya/core';
 import type { BackendManager } from '../backend/manager.js';
 import type { ResourceManager } from '../resource/manager.js';
+import { probeHardware } from '../resource/hwinfo.js';
 import type { StatsWriter } from '../stats/writer.js';
 import type { StatsStore } from '../stats/store.js';
 import { VoiceStore } from '../voices/store.js';
@@ -496,6 +497,7 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
     return {
       ts: snap.ts,
       mem: { total_mb: snap.mem_total_mb, free_mb: snap.mem_free_mb },
+      hw: probeHardware(),
       reserved: deps.resources.reservedEntries(),
       loading: deps.resources.loadingBackend(),
       load_ops: deps.resources.activeLoadOps(),

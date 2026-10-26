@@ -44,6 +44,27 @@ a { color: var(--accent); text-decoration: none; }
 .card .value { font-size: 24px; font-weight: 600; }
 .card .value small { font-size: 12px; color: var(--muted); font-weight: 400; }
 
+/* 后端进程卡片网格 */
+.be-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 12px; }
+.be-card {
+  background: var(--panel2); border: 1px solid var(--border); border-radius: 10px;
+  border-left: 3px solid var(--border); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.be-card.ready { border-left-color: var(--green); }
+.be-card.starting { border-left-color: var(--yellow); }
+.be-card.crashed { border-left-color: var(--red); }
+.be-card.draining { border-left-color: var(--accent); }
+/* 已点下启停、服务端状态还没变（排队等加载锁/驱逐）：整卡呼吸式高亮，表示「收到，处理中」 */
+.be-card.pending { border-left-color: var(--yellow); background: rgba(210,153,34,.07); }
+.be-card .be-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.be-card .be-tags { display: flex; align-items: center; gap: 6px; flex: none; }
+.be-card .be-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.be-card .be-sub { font-size: 12px; }
+.be-card .be-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 13px; }
+.be-card .be-metrics .k { color: var(--muted); font-size: 12px; margin-right: 4px; }
+.be-card .be-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; min-height: 26px; }
+
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
 .panel h3 { margin: 0 0 12px; font-size: 15px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -62,6 +83,10 @@ tr.clickable:hover { background: var(--panel2); cursor: pointer; }
 .tag.starting { background: rgba(210,153,34,.15); color: var(--yellow); }
 .tag.crashed { background: rgba(248,81,73,.15); color: var(--red); }
 .tag.draining { background: rgba(76,154,255,.15); color: var(--accent); }
+/* 本地待落地的动作标签：一闪一闪，明确表示「点上了」 */
+.tag.pending { background: rgba(210,153,34,.2); color: var(--yellow); animation: aya-pulse 1.2s ease-in-out infinite; }
+@keyframes aya-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .tag.pending { animation: none; } }
 
 .modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;

@@ -222,6 +222,7 @@ export interface RequestListFilter extends RangeFilter {
 export function queryRequests(store: StatsStore, f: RequestListFilter): { total: number; items: unknown[] } {
   const conds = ['ts_start >= ?', 'ts_start <= ?'];
   const params: unknown[] = [f.from, f.to];
+  // 与 where()（概览/趋势）一致：模型按全名精确匹配，前端下拉只能选配置里的模型
   if (f.model) { conds.push('model = ?'); params.push(f.model); }
   if (f.endpoint) { conds.push('endpoint = ?'); params.push(f.endpoint); }
   if (f.status === 'ok') conds.push('ok = 1');

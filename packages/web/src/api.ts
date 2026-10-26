@@ -110,9 +110,49 @@ export interface RequestRow {
   tg_tokens_s: number | null;
 }
 
+export interface HwCpuInfo {
+  model: string;
+  cores: number;
+  usage_pct: number | null;
+  load1: number;
+  load5: number;
+  load15: number;
+  temp_c: number | null;
+}
+
+export interface HwGpuInfo {
+  index: number;
+  name: string;
+  busy_pct: number | null;
+  vram_used_mb: number | null;
+  vram_total_mb: number | null;
+  gtt_used_mb: number | null;
+  gtt_total_mb: number | null;
+  power_w: number | null;
+  temp_c: number | null;
+  clock_mhz: number | null;
+}
+
+export interface HwNpuInfo {
+  name: string;
+  pci: string;
+  fw_version: string | null;
+  util_pct: number | null;
+  note?: string;
+}
+
+export interface HwSnapshot {
+  ts: number;
+  cpu: HwCpuInfo;
+  gpus: HwGpuInfo[];
+  npus: HwNpuInfo[];
+  swap: { total_mb: number; used_mb: number } | null;
+}
+
 export interface ResourceInfo {
   ts: number;
   mem: { total_mb: number; free_mb: number };
+  hw?: HwSnapshot;
   reserved: Array<{ backend: string; mem_mb: number; phase: string; live_mb?: number }>;
   loading?: string;
   load_ops: Array<{ backend: string; state: string; victims: string[]; waiters: number }>;

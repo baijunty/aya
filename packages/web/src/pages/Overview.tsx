@@ -2,13 +2,7 @@ import { api } from '../api';
 import { useRange } from '../App';
 import { usePoll } from '../refresh';
 import { Chart, baseGrid, axisStyle } from '../components/Chart';
-
-function fmt(n: number | null | undefined): string {
-  if (n == null) return '—';
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
-  return String(Math.round(n * 100) / 100);
-}
+import { axisFmt, fmtBucket, fmtCount, fmtDuration, fmtInt, fmtRatio, tooltipFmt } from '../format';
 
 export function Overview() {
   const { from, to } = useRange();
@@ -22,35 +16,31 @@ export function Overview() {
   return (
     <div>
       <div className="cards">
-        <div className="card">
+        <div className="card" title={`${fmtInt(s.requests.total)} 次（成功 ${fmtInt(s.requests.ok)} / 失败 ${fmtInt(s.requests.fail)}）`}>
           <div className="label">请求总数</div>
-          <div className="value">{fmt(s.requests.total)}</div>
+          <div className="value">{fmtCount(s.requests.total)}</div>
         </div>
-        <div className="card">
+        <div className="card" title={`prompt ${fmtInt(s.tokens.prompt)} / completion ${fmtInt(s.tokens.completion)} / 命中缓存 ${fmtInt(s.tokens.cached)}`}>
           <div className="label">Token 总量</div>
-          <div className="value">{fmt(s.tokens.total)}</div>
+          <div className="value">{fmtCount(s.tokens.total)}</div>
         </div>
-        <div className="card">
+        <div className="card" title={`p50 ${fmtDuration(s.latency_ms.p50)} · p95 ${fmtDuration(s.latency_ms.p95)} · p99 ${fmtDuration(s.latency_ms.p99)}`}>
           <div className="label">平均延迟</div>
-          <div className="value">
-            {fmt(s.latency_ms.avg)} <small>ms</small>
-          </div>
+          <div className="value">{fmtDuration(s.latency_ms.avg)}</div>
         </div>
-        <div className="card">
+        <div className="card" title={`平均 TTFT ${fmtDuration(s.ttft_ms.avg)}`}>
           <div className="label">P95 TTFT</div>
-          <div className="value">
-            {fmt(s.ttft_ms.p95)} <small>ms</small>
-          </div>
+          <div className="value">{fmtDuration(s.ttft_ms.p95)}</div>
         </div>
         <div className="card">
           <div className="label">错误率</div>
           <div className="value" style={{ color: s.requests.success_rate < 0.95 ? 'var(--red)' : 'var(--green)' }}>
-            {((1 - s.requests.success_rate) * 100).toFixed(1)}%
+            {fmtRatio(1 - s.requests.success_rate)}
           </div>
         </div>
         <div className="card">
           <div className="label">缓存命中率</div>
-          <div className="value">{(s.cache_hit_rate * 100).toFixed(1)}%</div>
+          <div className="value">{fmtRatio(s.cache_hit_rate)}</div>
         </div>
       </div>
 
@@ -60,9 +50,9 @@ export function Overview() {
           <Chart
             option={{
               grid: baseGrid,
-              tooltip: { trigger: 'axis' },
-              xAxis: { type: 'category', data: (reqSeries?.series ?? []).map((p) => new Date(p.bucket).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit' })), ...axisStyle },
-              yAxis: { type: 'value', ...axisStyle },
+              tooltip: { trigger: 'axis', formatter: tooltipFmt((v) => `${fmtCount(v)} 次`) },
+              xAxis: { type: 'category', data: (reqSeries?.series ?? []).map((p) => fmtBucket(p.bucket)), ...axisStyle },
+              yAxis: { type: 'value', ...axisStyle, axisLabel: { ...axisStyle.axisLabel, formatter: axisFmt(fmtCount) } },
               series: [{ type: 'line', smooth: true, areaStyle: { opacity: 0.15 }, data: (reqSeries?.series ?? []).map((p) => p.value ?? 0), itemStyle: { color: '#4c9aff' } }],
             }}
           />
@@ -72,10 +62,10 @@ export function Overview() {
           <Chart
             option={{
               grid: baseGrid,
-              tooltip: { trigger: 'axis' },
+              tooltip: { trigger: 'axis', formatter: tooltipFmt(fmtCount) },
               legend: { textStyle: { color: '#8494a3' } },
-              xAxis: { type: 'category', data: (tokSeries?.series ?? []).map((p) => new Date(p.bucket).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit' })), ...axisStyle },
-              yAxis: { type: 'value', ...axisStyle },
+              xAxis: { type: 'category', data: (tokSeries?.series ?? []).map((p) => fmtBucket(p.bucket)), ...axisStyle },
+              yAxis: { type: 'value', ...axisStyle, axisLabel: { ...axisStyle.axisLabel, formatter: axisFmt(fmtCount) } },
               series: [
                 { name: 'prompt', type: 'bar', stack: 't', data: (tokSeries?.series ?? []).map((p) => p.prompt ?? 0), itemStyle: { color: '#4c9aff' } },
                 { name: 'completion', type: 'bar', stack: 't', data: (tokSeries?.series ?? []).map((p) => p.completion ?? 0), itemStyle: { color: '#3fb950' } },
@@ -93,7 +83,7 @@ export function Overview() {
           <Chart
             height={240}
             option={{
-              tooltip: { trigger: 'item' },
+              tooltip: { trigger: 'item', formatter: tooltipFmt((v) => `${fmtCount(v)} 次`) },
               legend: { orient: 'vertical', left: 10, textStyle: { color: '#8494a3' } },
               series: [
                 {
@@ -101,7 +91,7 @@ export function Overview() {
                   radius: ['40%', '68%'],
                   center: ['60%', '50%'],
                   data: s.by_model.map((m) => ({ name: m.model, value: m.requests })),
-                  label: { color: '#d7dee6' },
+                  label: { color: '#d7dee6', formatter: '{b}: {d}%' },
                 },
               ],
             }}

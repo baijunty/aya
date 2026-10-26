@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "echo 'no web tests' && exit 0"
+    "test": "vitest run"
   },
   "dependencies": {
     "echarts": "^5.5.1",

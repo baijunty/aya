@@ -81,6 +81,10 @@
   `--sigmas qwen-image-2.1-turbo --steps 8 --cfg-scale 1.0 --sampling-method euler`
   （sigma 预设 = 1.0,0.978453,...,0.0，实际步数由 sigma 个数决定）。单独注册一个 cli 后端与
   模型名（如 `qwen-image-turbo`）即可与基础版并存、按 `model` 路由切换。
+- MOSS-Image（SFT）：同为纯后端参数。sd.cpp 侧组件为 5B DiT + Qwen3.5-9B 文本编码器
+  （`--llm`）+ FLUX.2 VAE，且**必须**传官方 Qwen3.5 `tokenizer.json`（`--tokenizer`，
+  其词表与 sd.cpp 内置 Qwen 词表不同）。默认 `--cfg-scale 3.0`、discrete 调度（flow shift 5）、
+  20 步 euler；宽高需为 16 的倍数。仅文生图，后端 args 不配 `{ref_image}`。
 
 ### A5b. `POST /v1/images/edits` — 图片编辑
 
@@ -92,6 +96,8 @@
   `-r a.png -r b.png`，顺序保持）；请求无参考图时该 flag 连同占位符一并剔除，
   同一后端可同时服务 generations。
 - 响应与 A5 相同（`data[].b64_json`）；`req_summary` 额外记 `ref_images` 张数。
+- 后端 args 里没有 `{ref_image}` 的模型（如 MOSS-Image，sd.cpp 侧仅支持文生图）不消费参考图：
+  edits 请求会按 prompt 正常出图但忽略上传的图片，选择模型时需自行区分。
 - Qwen-Image-2.1 编辑要求：文本编码器需带 vision tower（safetensors int8_convrot 自带；
   GGUF 文本编码器需配套 `--llm_vision` mmproj）。分辨率取 `size`，建议 32 的倍数。
 
